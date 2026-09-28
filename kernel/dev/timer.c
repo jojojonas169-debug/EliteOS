@@ -20,8 +20,26 @@ void lapic_timer_calibrate(void);
 
 #define PIT_HZ 1193182u
 
-/* Busy-wait for `ms` milliseconds using PIT channel 2 (speaker gate). */
-static void pit_wait(uint32_t ms)
+/* ACPI power-management timer: 3.579545 MHz, 24 or 32 bits wide. */
+static bool pmtimer_wait(uint32_t ms)
+{
+    if (!acpi.pm_tmr_port) return false;
+    uint32_t mask = acpi.pm_tmr_32 ? 0xFFFFFFFFu : 0xFFFFFFu;
+    uint32_t start = inl(acpi.pm_tmr_port) & mask;
+    uint64_t need = 3579545ull * ms / 1000, elapsed = 0;
+    uint32_t last = start;
+    uint64_t t0 = rdtsc();
+    while (elapsed < need && rdtsc() - t0 < 6000000000ull) {
+        uint32_t now = inl(acpi.pm_tmr_port) & mask;
+        elapsed += (now - last) & mask;
+        last = now;
+    }
+    return elapsed >= need;
+}
+
+/* Busy-wait for `ms` milliseconds using PIT channel 2 (speaker gate).
+ * Returns false if the PIT never signalled (some newer boards gate it off). */
+static bool pit_wait(uint32_t ms)
 {
     uint32_t count = PIT_HZ * ms / 1000;
     uint8_t p61 = inb(0x61);
@@ -33,17 +51,40 @@ static void pit_wait(uint32_t ms)
     uint8_t g = inb(0x61) & (uint8_t)~0x01;
     outb(0x61, g);
     outb(0x61, g | 1);
-    for (uint64_t i = 0; i < 100000000ull && !(inb(0x61) & 0x20); i++) {}
+    /* give up after ~3e9 TSC cycles (about a second on any real CPU) */
+    uint64_t t0 = rdtsc();
+    while (rdtsc() - t0 < 3000000000ull)
+        if (inb(0x61) & 0x20) return true;
+    return false;
 }
+
+static const char *calib_source = "PIT";
 
 uint32_t pit_measure_lapic(void)
 {
     const uint32_t ms = 50;
     lapic_timer_begin_measure();
     uint64_t t0 = rdtsc();
-    pit_wait(ms);
+    bool ok = pit_wait(ms);
+    if (!ok) {
+        /* no PIT: measure again against the ACPI PM timer */
+        calib_source = "ACPI PM timer";
+        lapic_timer_begin_measure();
+        t0 = rdtsc();
+        ok = pmtimer_wait(ms);
+        if (!ok) calib_source = "guess";
+    }
     uint32_t el = lapic_timer_elapsed();
     uint64_t t1 = rdtsc();
+    if (!ok) {
+        /* last resort: CPUID leaf 0x16 base frequency, else assume 2 GHz */
+        uint32_t a, b, c, d;
+        cpuid(0, 0, &a, &b, &c, &d);
+        uint64_t mhz = 2000;
+        if (a >= 0x16) { cpuid(0x16, 0, &a, &b, &c, &d); if (a) mhz = a; }
+        t1 = t0 + mhz * 1000 * ms;
+        el = (uint32_t)(62500 * ms);
+    }
     tsc_per_ms = (t1 - t0) / ms;
     if (tsc_per_ms < 1000) tsc_per_ms = 1000000;
     cpu_info.tsc_hz = tsc_per_ms * 1000;
@@ -55,7 +96,7 @@ void timer_calibrate(void)
     tsc_base = rdtsc();
     lapic_timer_calibrate();
     tsc_base = rdtsc();
-    klog("timer: TSC %lu MHz", tsc_per_ms / 1000);
+    klog("timer: TSC %lu MHz (calibrated with the %s)", tsc_per_ms / 1000, calib_source);
 }
 
 uint64_t tsc_hz(void) { return tsc_per_ms * 1000; }

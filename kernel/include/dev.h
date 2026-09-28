@@ -37,6 +37,8 @@ struct acpi_info {
     uint8_t  reset_value;
     bool     reset_valid;
     uint16_t century_reg;
+    uint16_t pm_tmr_port;
+    bool     pm_tmr_32;
     char     oem[7];
     uint64_t hpet_phys;
     uint64_t mcfg_phys;

@@ -79,7 +79,7 @@ static void render_row(int y, void *arg)
         double log_zn = k_log(zr2 + zi2) / 2;
         double nu = k_log(log_zn / 0.6931471805599453) / 0.6931471805599453;
         double smooth = (double)it + 1 - nu;
-        int idx = (int)(k_sqrt(smooth) * 96.0) & 1023;
+        int idx = (int)(k_sqrt(smooth) * 44.0) & 1023;
         line[x] = m->lut[idx];
     }
 }

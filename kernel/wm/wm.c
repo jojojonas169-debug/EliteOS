@@ -1184,6 +1184,23 @@ static void handle_key(int key, bool pressed)
             return;
         }
         if ((mods & MOD_SUPER) && key == KEY_E) { app_launch("files"); return; }
+        if ((mods & MOD_SUPER) && (key == KEY_LEFT || key == KEY_RIGHT) && wm_focus_win) {
+            window_t *w = wm_focus_win;
+            int half = SW / 2, avail = SH - desktop_taskbar_h();
+            wm_dirty_window(w);
+            if (w->state == WS_MAXIMIZED) w->state = WS_NORMAL;
+            if (w->flags & WF_RESIZABLE) {
+                w->restore = R(w->x, w->y, w->cw, w->ch);
+                w->x = key == KEY_LEFT ? 0 : half;
+                w->y = 0;
+                set_request(w, half, avail - title_h(w));
+            } else {
+                w->x = key == KEY_LEFT ? MAX(0, (half - w->cw) / 2) : half + MAX(0, (half - w->cw) / 2);
+                w->y = MAX(0, (avail - w->ch - title_h(w)) / 2);
+            }
+            wm_dirty_window(w);
+            return;
+        }
         if ((mods & MOD_SUPER) && key == KEY_UP && wm_focus_win) {
             if (wm_focus_win->state != WS_MAXIMIZED) wm_toggle_maximize(wm_focus_win);
             return;

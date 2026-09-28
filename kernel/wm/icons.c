@@ -182,8 +182,13 @@ void icon_draw(surface_t *s, int icon, int x, int y, int sz)
     case ICON_BROWSER:
     case ICON_NETWORK:
         if (icon == ICON_BROWSER) tile(s, x, y, sz, 0x4FC3F7, 0x1565C0);
+        if (icon == ICON_NETWORK && sz >= 28) tile(s, x, y, sz, 0x38C6F4, 0x2563EB);
         {
-            color_t c = icon == ICON_BROWSER ? W : 0xFFE9EBF8u;
+            color_t c = icon == ICON_BROWSER || sz >= 28 ? W : 0xFFE9EBF8u;
+            if (icon == ICON_NETWORK && sz >= 28) {
+                /* shrink the glyph inside the tile */
+                fx += fs * 0.12f; fy += fs * 0.08f; fs *= 0.76f;
+            }
             float cx = 0.5f, cy = icon == ICON_BROWSER ? 0.5f : 0.62f;
             if (icon == ICON_BROWSER) {
                 gfx_ring(s, P(cx, cy), fs * 0.28f, MAX(1.2f, fs * 0.05f), c);

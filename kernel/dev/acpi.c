@@ -99,6 +99,8 @@ static void parse_fadt(struct sdt_header *h)
 {
     uint8_t *p = (uint8_t *)h;
     acpi.pm1a_cnt = *(uint32_t *)(p + 64);
+    acpi.pm_tmr_port = (uint16_t)*(uint32_t *)(p + 76);
+    if (h->length >= 116) acpi.pm_tmr_32 = (*(uint32_t *)(p + 112) >> 8) & 1;
     acpi.pm1b_cnt = *(uint32_t *)(p + 68);
     if (h->length > 108) acpi.century_reg = p[108];
     if (h->length >= 129) {

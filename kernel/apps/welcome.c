@@ -32,20 +32,22 @@ static void welcome_paint(app_t *a, surface_t *s)
 
     static const struct { int icon; const char *t, *d; } cards[] = {
         { ICON_MONITOR, "True multi-core", "Preemptive scheduler on every core" },
-        { ICON_CUBE, "Compositor", "Alpha blending, blur, shadows and animations" },
-        { ICON_SETTINGS, "Own bootloader", "UEFI loader and kernel written from scratch" },
-        { ICON_FRACTAL, "Parallel apps", "Mandelbrot and 3D render across all cores" },
-        { ICON_TERMINAL, "Ring-3 programs", "Protected user processes with syscalls" },
-        { ICON_FILES, "Full desktop", "Files, editor, games, paint and more" },
+        { ICON_CUBE, "Compositor", "Blur, shadows, fades and animations" },
+        { ICON_SETTINGS, "Own bootloader", "UEFI loader and kernel from scratch" },
+        { ICON_FRACTAL, "Parallel apps", "3D and fractals on all cores" },
+        { ICON_TERMINAL, "Ring-3 programs", "Isolated processes with syscalls" },
+        { ICON_NETWORK, "TCP/IP stack", "DHCP, DNS, ping and HTTP" },
+        { ICON_FILES, "Full desktop", "Files, editor, paint and more" },
+        { ICON_TETRIS, "Games", "Blocks, Snake and Game of Life" },
     };
-    int cols = 3, cw = (W - 48 - 2 * 16) / cols, ch = 84;
-    for (int i = 0; i < 6; i++) {
-        int x = 24 + (i % cols) * (cw + 16), y = 172 + (i / cols) * (ch + 14);
+    int cols = 4, cw = (W - 48 - 3 * 14) / cols, ch = 96;
+    for (int i = 0; i < 8; i++) {
+        int x = 24 + (i % cols) * (cw + 14), y = 172 + (i / cols) * (ch + 14);
         gfx_round_rect(s, x, y, cw, ch, 12, theme.panel);
         gfx_round_outline(s, x, y, cw, ch, 12, ALPHA(0xFFFFFF, 14));
-        icon_draw(s, cards[i].icon, x + 14, y + 18, 44);
-        gfx_text(s, font_ui_bold, x + 72, y + 18, cards[i].t, theme.text);
-        gfx_text_wrap(s, font_ui, R(x + 72, y + 40, cw - 84, 40), cards[i].d, theme.text_dim, 0);
+        icon_draw(s, cards[i].icon, x + 14, y + 14, 36);
+        gfx_text(s, font_ui_bold, x + 60, y + 16, cards[i].t, theme.text);
+        gfx_text_wrap(s, font_ui, R(x + 14, y + 58, cw - 24, 40), cards[i].d, theme.text_dim, 0);
     }
 
     int by = H - 58;
@@ -61,7 +63,7 @@ int welcome_main(void *arg)
 {
     UNUSED(arg);
     app_t a = { 0 };
-    a.win = wm_create("Welcome", 780, 520, WF_CENTER);
+    a.win = wm_create("Welcome", 900, 480, WF_CENTER);
     if (!a.win) return 1;
     wm_set_icon(a.win, ICON_BROWSER);
     a.on_paint = welcome_paint;

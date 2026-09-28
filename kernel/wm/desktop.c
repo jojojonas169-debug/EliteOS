@@ -517,15 +517,22 @@ static rect_t sm_full_rect(void)
     return R((SW - SM_W) / 2 - 30, SH - TB_H - SM_H - 40, SM_W + 60, SM_H + 70);
 }
 
+static int sm_score(const struct app_info *a)
+{
+    if (!sm_search[0]) return 1;
+    if (!strncasecmp(a->name, sm_search, strlen(sm_search))) return 4;
+    if (!strncasecmp(a->id, sm_search, strlen(sm_search))) return 3;
+    if (strstr_ci(a->name, sm_search)) return 2;
+    if (strstr_ci(a->desc, sm_search)) return 1;
+    return 0;
+}
+
 static void sm_filter(void)
 {
     sm_nresults = 0;
-    for (int i = 0; i < app_count && sm_nresults < 32; i++) {
-        const struct app_info *a = &app_table[i];
-        if (!sm_search[0] || strstr_ci(a->name, sm_search) || strstr_ci(a->desc, sm_search) ||
-            strstr_ci(a->id, sm_search))
-            sm_results[sm_nresults++] = i;
-    }
+    for (int score = 4; score >= 1; score--)
+        for (int i = 0; i < app_count && sm_nresults < 32; i++)
+            if (sm_score(&app_table[i]) == score) sm_results[sm_nresults++] = i;
     if (sm_sel >= sm_nresults) sm_sel = MAX(0, sm_nresults - 1);
 }
 

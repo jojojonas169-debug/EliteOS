@@ -337,10 +337,10 @@ int paint_main(void *arg)
     }
     app_t a = { 0 };
     a.data = p;
-    a.win = wm_create("Paint", 1000, 580, WF_RESIZABLE);
+    a.win = wm_create("Paint", 1000, 650, WF_RESIZABLE);
     if (!a.win) return 1;
     wm_set_icon(a.win, ICON_PAINT);
-    wm_set_min_size(a.win, 640, 520);
+    wm_set_min_size(a.win, 640, 640);
     a.on_paint = paint_paint;
     a.on_event = paint_event;
     int r = app_run(&a);
