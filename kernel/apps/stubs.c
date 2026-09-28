@@ -40,3 +40,13 @@ __attribute__((weak)) process_t *proc_spawn(const char *path, int argc, char **a
     UNUSED(path); UNUSED(argc); UNUSED(argv); UNUSED(tty); UNUSED(cwd);
     return NULL;
 }
+
+#include <net.h>
+__attribute__((weak)) int proc_wait(int pid) { UNUSED(pid); return -1; }
+__attribute__((weak)) bool proc_kill(int pid) { UNUSED(pid); return false; }
+__attribute__((weak)) bool net_get_info(struct net_info *ni) { UNUSED(ni); return false; }
+__attribute__((weak)) bool net_dhcp(int t) { UNUSED(t); return false; }
+__attribute__((weak)) bool net_resolve(const char *h, uint32_t *ip, int t) { UNUSED(h); UNUSED(ip); UNUSED(t); return false; }
+__attribute__((weak)) int net_ping(uint32_t ip, uint16_t s, int t) { UNUSED(ip); UNUSED(s); UNUSED(t); return -1; }
+__attribute__((weak)) int net_http_get(const char *u, char **b, size_t *l, int t) { UNUSED(u); UNUSED(b); UNUSED(l); UNUSED(t); return -1; }
+__attribute__((weak)) void ip_to_str(uint32_t ip, char *o) { snprintf(o, 16, "%u.%u.%u.%u", ip >> 24, (ip >> 16) & 255, (ip >> 8) & 255, ip & 255); }

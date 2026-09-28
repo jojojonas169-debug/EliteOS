@@ -5,6 +5,7 @@
 #include <gfx.h>
 #include <input.h>
 #include <spinlock.h>
+#include <dev.h>
 
 /* ------------------------------------------------------------------------
  * theme
@@ -159,6 +160,7 @@ typedef struct ui {
 
 enum { BTN_NORMAL, BTN_PRIMARY, BTN_DANGER, BTN_FLAT, BTN_SUBTLE };
 
+uint64_t ui_id(rect_t r);
 void ui_feed(ui_t *u, const struct gui_event *ev);
 void ui_frame_end(ui_t *u);
 bool ui_hover(ui_t *u, rect_t r);
@@ -202,5 +204,7 @@ struct app_info {
 extern const struct app_info app_table[];
 extern const int app_count;
 const struct app_info *app_find(const char *id);
+void open_path(const char *path);
+int  file_icon_for(const char *name);
 
 #endif

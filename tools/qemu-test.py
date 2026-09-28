@@ -38,6 +38,20 @@ SHIFTED = {
 }
 
 
+# German layout: character -> (qcode, modifiers)
+DE = {
+    'z': ('y', []), 'y': ('z', []), 'Z': ('y', ['shift']), 'Y': ('z', ['shift']),
+    '-': ('slash', []), '_': ('slash', ['shift']), '/': ('7', ['shift']), ':': ('dot', ['shift']),
+    ';': ('comma', ['shift']), '"': ('2', ['shift']), '=': ('0', ['shift']), '(': ('8', ['shift']),
+    ')': ('9', ['shift']), '<': ('less', []), '>': ('less', ['shift']), '|': ('less', ['alt_r']),
+    '+': ('bracket_right', []), '*': ('bracket_right', ['shift']), '#': ('backslash', []),
+    "'": ('backslash', ['shift']), '?': ('minus', ['shift']), '!': ('1', ['shift']), '&': ('6', ['shift']),
+    '%': ('5', ['shift']), '$': ('4', ['shift']), '{': ('7', ['alt_r']), '}': ('0', ['alt_r']),
+    '[': ('8', ['alt_r']), ']': ('9', ['alt_r']), '\\': ('minus', ['alt_r']), '@': ('q', ['alt_r']),
+    '~': ('bracket_right', ['alt_r']), '^': ('grave_accent', []),
+}
+
+
 class QMP:
     def __init__(self, path):
         for _ in range(100):
@@ -71,9 +85,14 @@ class QMP:
         self.cmd('input-send-event', events=evs)
         time.sleep(0.03)
 
+    layout = 'de'
+
     def type(self, text):
         for ch in text:
-            if ch.isupper():
+            if self.layout == 'de' and ch in DE:
+                k, mods = DE[ch]
+                self.keys(mods + [k])
+            elif ch.isupper():
                 self.keys(['shift', ch.lower()])
             elif ch in SHIFTED:
                 self.keys(['shift', SHIFTED[ch]])
@@ -152,6 +171,8 @@ def main():
                 qmp.shot(os.path.join(args.out, a[0] + '.png'))
             elif op == 'key':
                 qmp.keys(a)
+            elif op == 'layout':
+                qmp.layout = a[0]
             elif op == 'type':
                 qmp.type(rest[0] if rest else '')
             elif op == 'move':

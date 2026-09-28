@@ -5,6 +5,7 @@
 #include <wm.h>
 
 static uint64_t wid(rect_t r) { return ((uint64_t)(uint32_t)r.x << 40) ^ ((uint64_t)(uint32_t)r.y << 20) ^ (uint64_t)(uint32_t)(r.w * 7 + r.h); }
+uint64_t ui_id(rect_t r) { return wid(r); }
 
 void ui_feed(ui_t *u, const struct gui_event *ev)
 {

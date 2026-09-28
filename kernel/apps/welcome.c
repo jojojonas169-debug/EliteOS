@@ -31,7 +31,7 @@ static void welcome_paint(app_t *a, surface_t *s)
     hero(s, W, 150, "Welcome to ZenithOS", sub);
 
     static const struct { int icon; const char *t, *d; } cards[] = {
-        { ICON_MONITOR, "True multi-core", "Preemptive SMP scheduler on every CPU core" },
+        { ICON_MONITOR, "True multi-core", "Preemptive scheduler on every core" },
         { ICON_CUBE, "Compositor", "Alpha blending, blur, shadows and animations" },
         { ICON_SETTINGS, "Own bootloader", "UEFI loader and kernel written from scratch" },
         { ICON_FRACTAL, "Parallel apps", "Mandelbrot and 3D render across all cores" },
@@ -50,8 +50,8 @@ static void welcome_paint(app_t *a, surface_t *s)
 
     int by = H - 58;
     gfx_fill(s, 0, by - 14, W, 1, ALPHA(0xFFFFFF, 12));
-    gfx_text(s, font_ui, 24, by + 10, "Tip: press the Windows key for the start menu, Ctrl+Alt+T for a terminal.",
-             theme.text_faint);
+    gfx_text(s, font_ui, 24, by + 3, "Windows key: start menu", theme.text_faint);
+    gfx_text(s, font_ui, 24, by + 21, "Ctrl+Alt+T: terminal", theme.text_faint);
     if (ui_button(u, R(W - 150, by, 126, 38), "Get started", BTN_PRIMARY)) a->quit = true;
     if (ui_button(u, R(W - 290, by, 126, 38), "Zenith 3D", BTN_NORMAL)) app_launch("demo3d");
     if (ui_button(u, R(W - 430, by, 126, 38), "Terminal", BTN_NORMAL)) app_launch("terminal");
