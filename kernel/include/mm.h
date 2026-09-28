@@ -38,6 +38,7 @@
 void     pmm_init(struct bootinfo *bi);
 uint64_t pmm_alloc(void);                 /* one zeroed page, physical addr, 0 on OOM */
 uint64_t pmm_alloc_contig(size_t pages);  /* zeroed */
+uint64_t pmm_alloc_below(uint64_t limit); /* zeroed page below limit */
 void     pmm_free(uint64_t pa);
 void     pmm_free_contig(uint64_t pa, size_t pages);
 uint64_t pmm_total_pages(void);

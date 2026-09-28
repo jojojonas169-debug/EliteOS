@@ -51,6 +51,7 @@ NORETURN void kmain(struct bootinfo *bi)
     pci_init();
     input_init();
     ps2_init();
+    usb_init();
     net_init();
 
     bootcon_status("File system", 70);

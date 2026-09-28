@@ -111,6 +111,11 @@ const char *pci_device_name(uint16_t vendor, uint16_t device);
 NORETURN void system_reboot(void);
 NORETURN void system_poweroff(void);
 
+/* usb.c */
+void usb_init(void);
+int  usb_device_count(void);
+const char *usb_device_name(int i);
+
 /* net */
 void net_init(void);
 

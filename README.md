@@ -34,6 +34,9 @@ Some highlights:
   calls. A crashing program is terminated; the system keeps running.
 - **Networking.** An Intel e1000 driver plus a small TCP/IP stack: DHCP, ARP,
   ICMP ping, DNS and HTTP downloads with `wget`.
+- **USB.** An xHCI host controller driver with hub support and HID keyboards,
+  mice and tablets (report descriptors are parsed, keys auto-repeat), next to
+  the classic PS/2 path.
 - **Anti-aliased everything.** Text uses Roboto and DejaVu Sans Mono,
   pre-rasterised with hinting; icons are drawn as vectors at any size.
 
@@ -60,7 +63,8 @@ make            # -> build/zenithos.iso
 make run        # boots the ISO in QEMU with 4 CPUs and a network card
 ```
 
-`make run-fast` boots straight from the build tree without making an ISO.
+`make run-fast` boots straight from the build tree without making an ISO;
+`make run-usb` attaches the keyboard and mouse over USB (behind a hub) instead of PS/2.
 
 ### Virtual machines
 
@@ -80,9 +84,8 @@ Write the ISO to a USB stick (it is a hybrid image) and boot it in UEFI mode:
 sudo dd if=build/zenithos.iso of=/dev/sdX bs=4M status=progress conv=fsync
 ```
 
-Everything runs from RAM; nothing on your disks is touched. Keyboard and mouse
-use the PS/2 interface, which most PCs also provide for USB devices through
-firmware emulation. Press a key during the boot countdown to pick a different
+Everything runs from RAM; nothing on your disks is touched. Keyboards and mice
+work over USB (xHCI, also behind hubs) or PS/2. Press a key during the boot countdown to pick a different
 screen resolution; the choice is remembered on writable media.
 
 ## Using it
@@ -154,7 +157,8 @@ kernel/
   arch/      GDT/IDT/TSS, interrupt and syscall entry, context switch, SMP start-up
   mm/        physical page allocator, 4-level paging, kernel heap
   proc/      SMP scheduler, wait channels, mutexes, parallel_for, processes, syscalls
-  dev/       ACPI, local APIC + I/O APIC, timers, RTC, PS/2 + vmmouse, PCI, serial, power
+  dev/       ACPI, local APIC + I/O APIC, timers, RTC, PS/2 + vmmouse, xHCI USB + HID,
+             PCI, serial, power
   fs/        RAM file system with tar initrd loader, terminal line discipline
   net/       e1000 driver, Ethernet/ARP/IPv4/ICMP/UDP/TCP, DHCP, DNS, HTTP
   gfx/       2D graphics (anti-aliased shapes, gradients, blur, shadows), font renderer
@@ -174,8 +178,7 @@ screenshots through QMP — that is how the pictures above were made.
 Version 1.0 "Aurora". It boots, it is fun, and it is honest about its limits:
 
 - The file system lives in RAM: changes are lost at shutdown.
-- Input devices must speak PS/2 (or VMware's absolute pointer); there is no
-  native USB stack yet.
+- USB covers keyboards, mice and tablets (no USB storage or USB 3 hubs).
 - Networking supports Intel e1000-family cards and plain HTTP (no TLS).
 - No sound.
 

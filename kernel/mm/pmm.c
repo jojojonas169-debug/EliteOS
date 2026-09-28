@@ -117,6 +117,24 @@ uint64_t pmm_alloc_contig(size_t count)
     return pa;
 }
 
+/* one zeroed page below `limit` (for DMA engines limited to 32-bit addresses) */
+uint64_t pmm_alloc_below(uint64_t limit)
+{
+    spin_lock(&pmm_lock);
+    uint64_t end = MIN(npages, limit / PAGE_SIZE);
+    for (uint64_t p = 256; p < end; p++) {
+        if (!is_used(p)) {
+            set_used(p);
+            free_count--;
+            spin_unlock(&pmm_lock);
+            memset(P2V(p * PAGE_SIZE), 0, PAGE_SIZE);
+            return p * PAGE_SIZE;
+        }
+    }
+    spin_unlock(&pmm_lock);
+    return 0;
+}
+
 uint64_t pmm_alloc(void)
 {
     return pmm_alloc_contig(1);

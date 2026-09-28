@@ -152,7 +152,7 @@ $(BUILD)/zenithos.iso: $(BUILD)/efiboot.img
 	  --efi-boot efiboot.img -efi-boot-part --efi-boot-image --protective-msdos-label \
 	  -o $@ $(BUILD)/iso 2>/dev/null
 
-.PHONY: all iso kernel run run-fast run-headless clean FORCE
+.PHONY: all iso kernel run run-fast run-headless run-usb clean FORCE
 .DEFAULT_GOAL := all
 
 all: $(BUILD)/zenithos.iso
@@ -176,6 +176,12 @@ run-fast: $(BUILD)/esp.stamp $(BUILD)/ovmf_vars.fd
 
 run-headless: $(BUILD)/zenithos.iso $(BUILD)/ovmf_vars.fd
 	$(QEMU) $(QEMU_COMMON) -display none -cdrom $(BUILD)/zenithos.iso
+
+# same, but keyboard and mouse are USB devices behind a hub (tests the xHCI driver)
+run-usb: $(BUILD)/zenithos.iso $(BUILD)/ovmf_vars.fd
+	$(QEMU) $(QEMU_COMMON) -cdrom $(BUILD)/zenithos.iso -device qemu-xhci,id=xhci \
+	  -device usb-hub,bus=xhci.0,port=1,id=hub -device usb-kbd,bus=xhci.0,port=1.1 \
+	  -device usb-tablet,bus=xhci.0,port=2
 
 clean:
 	rm -rf $(BUILD)
