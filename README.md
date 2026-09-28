@@ -4,7 +4,7 @@
 
 **A 64-bit operating system written from scratch — with a compositing desktop that uses every CPU core.**
 
-Own UEFI bootloader · own SMP kernel · own drivers · own TCP/IP stack · own window system · 18 apps
+Own UEFI bootloader · own SMP kernel · own drivers · own TCP/IP stack · own web browser · own window system · 19 apps
 
 ![ZenithOS desktop](docs/showcase.png)
 
@@ -34,6 +34,9 @@ Some highlights:
   calls. A crashing program is terminated; the system keeps running.
 - **Networking.** An Intel e1000 driver plus a small TCP/IP stack: DHCP, ARP,
   ICMP ping, DNS and HTTP downloads with `wget`.
+- **A web browser.** *Zenith Web* has its own HTML parser and layout engine
+  (headings, paragraphs, lists, links, preformatted text, entities), follows
+  redirects, keeps a history and also opens local `file://` pages and folders.
 - **USB.** An xHCI host controller driver with hub support and HID keyboards,
   mice and tablets (report descriptors are parsed, keys auto-repeat), next to
   the classic PS/2 path.
@@ -48,6 +51,8 @@ Some highlights:
 | Files and the editor with C highlighting | Parallel Mandelbrot and Blocks |
 | ![Welcome](docs/welcome.png) | ![Networking in the terminal](docs/network.png) |
 | Welcome tour | DHCP, ping, DNS and HTTP from the shell |
+| ![Zenith Web](docs/browser.png) | ![Settings](docs/settings.png) |
+| Zenith Web rendering a local HTML page | Settings with live-generated wallpapers |
 
 ## Trying it
 
@@ -108,7 +113,7 @@ run `layout us` to switch.
 
 Files · Terminal · Text Editor · System Monitor · Zenith 3D · Mandelbrot ·
 Blocks · Snake · Paint · Calculator · Clock (stopwatch, timer, calendar) ·
-Images · System Log · Network · Settings · About · Welcome — plus the ring-3
+Images · System Log · Zenith Web · Network · Settings · About · Welcome — plus the ring-3
 programs *Plasma* and *Life* that open their own windows.
 
 ### The shell
@@ -122,6 +127,7 @@ ps   kill   free   df   uptime   lscpu   lspci   dmesg   neofetch
 ifconfig   dhcp   ping   nslookup   wget   calc   bench   cal   matrix
 ```
 
+`open` starts apps, files and web pages (`open http://example.com`).
 Anything else is looked up in `/bin` and started as a user process.
 
 ## Writing programs
@@ -163,7 +169,7 @@ kernel/
   net/       e1000 driver, Ethernet/ARP/IPv4/ICMP/UDP/TCP, DHCP, DNS, HTTP
   gfx/       2D graphics (anti-aliased shapes, gradients, blur, shadows), font renderer
   wm/        compositing window manager, desktop shell, widgets, vector icons
-  apps/      the built-in applications
+  apps/      the built-in applications, including the Zenith Web browser
 user/        libc and ring-3 programs
 tools/       font baking, symbol table generation, headless QEMU test driver
 ```
@@ -179,7 +185,8 @@ Version 1.0 "Aurora". It boots, it is fun, and it is honest about its limits:
 
 - The file system lives in RAM: changes are lost at shutdown.
 - USB covers keyboards, mice and tablets (no USB storage or USB 3 hubs).
-- Networking supports Intel e1000-family cards and plain HTTP (no TLS).
+- Networking supports Intel e1000-family cards and plain HTTP (no TLS). Zenith
+  Web renders HTML structure only — no CSS, images or JavaScript.
 - No sound.
 
 ## Credits

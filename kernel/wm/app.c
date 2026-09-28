@@ -23,6 +23,7 @@ int imageview_main(void *arg);
 int logview_main(void *arg);
 int settings_main(void *arg);
 int netinfo_main(void *arg);
+int browser_main(void *arg);
 int user_app_main(void *arg);
 
 const struct app_info app_table[] = {
@@ -40,10 +41,11 @@ const struct app_info app_table[] = {
     { "images",   "Images",         "View pictures and screenshots",     ICON_IMAGE,    imageview_main, true },
     { "plasma",   "Plasma",         "Ring-3 user program demo",          ICON_PLASMA,   user_app_main,  true },
     { "logs",     "System Log",     "Kernel messages",                   ICON_LOG,      logview_main,   true },
+    { "browser",  "Zenith Web",     "Browse the web over HTTP",          ICON_BROWSER,  browser_main,   true },
     { "netinfo",  "Network",        "Network status and tools",          ICON_NETWORK,  netinfo_main,   true },
     { "settings", "Settings",       "Personalize ZenithOS",              ICON_SETTINGS, settings_main,  true },
     { "about",    "About",          "About this computer",               ICON_INFO,     about_main,     true },
-    { "welcome",  "Welcome",        "Tour of ZenithOS",                  ICON_BROWSER,  welcome_main,   true },
+    { "welcome",  "Welcome",        "Tour of ZenithOS",                  ICON_HOME,     welcome_main,   true },
 };
 const int app_count = ARRAY_SIZE(app_table);
 
@@ -117,6 +119,7 @@ static bool ends_with(const char *s, const char *suf)
 int file_icon_for(const char *name)
 {
     if (ends_with(name, ".bmp") || ends_with(name, ".ppm")) return ICON_IMAGE;
+    if (ends_with(name, ".html") || ends_with(name, ".htm")) return ICON_BROWSER;
     if (ends_with(name, ".txt") || ends_with(name, ".md") || ends_with(name, ".c") || ends_with(name, ".h") ||
         ends_with(name, ".cfg") || ends_with(name, ".sh") || ends_with(name, ".log"))
         return ICON_TEXT;
@@ -127,10 +130,15 @@ int file_icon_for(const char *name)
 /* open a file with the right app */
 void open_path(const char *path)
 {
+    if (!strncasecmp(path, "http://", 7) || !strncasecmp(path, "https://", 8) || !strncasecmp(path, "file://", 7)) {
+        launch_with("browser", path);
+        return;
+    }
     struct vfs_stat st;
     if (vfs_stat(path, &st)) return;
     if (st.type == VN_DIR) { launch_with("files", path); return; }
     if (ends_with(path, ".bmp") || ends_with(path, ".ppm")) { launch_with("images", path); return; }
+    if (ends_with(path, ".html") || ends_with(path, ".htm")) { launch_with("browser", path); return; }
     /* ELF programs start as user processes */
     char magic[4] = { 0 };
     vnode_t *vn = vfs_open(path, false);

@@ -792,8 +792,9 @@ static int c_sleep(struct shell *sh, int argc, char **argv)
 
 static int c_open(struct shell *sh, int argc, char **argv)
 {
-    if (argc < 2) { err(sh, "open", "usage: open <file|app>"); return 1; }
+    if (argc < 2) { err(sh, "open", "usage: open <file|app|url>"); return 1; }
     if (app_find(argv[1])) { app_launch(argv[1]); return 0; }
+    if (strstr(argv[1], "://")) { open_path(argv[1]); return 0; }
     char p[VFS_PATH_MAX];
     resolve(sh, argv[1], p);
     struct vfs_stat st;

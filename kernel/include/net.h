@@ -17,6 +17,7 @@ bool net_dhcp(int timeout_ms);
 bool net_resolve(const char *host, uint32_t *ip, int timeout_ms);
 int  net_ping(uint32_t ip, uint16_t seq, int timeout_ms);          /* rtt ms, -1 on timeout */
 int  net_http_get(const char *url, char **body, size_t *len, int timeout_ms);  /* status or -1 */
+int  net_http_get_ex(const char *url, char **body, size_t *len, char *location, size_t locn, int timeout_ms);
 void ip_to_str(uint32_t ip, char *out);
 bool str_to_ip(const char *s, uint32_t *ip);
 

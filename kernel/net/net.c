@@ -577,10 +577,34 @@ static void split_url(const char *url, char *host, size_t hn, uint16_t *port, ch
     strlcpy(path, slash ? slash : "/", pn);
 }
 
-int net_http_get(const char *url, char **body, size_t *blen, int timeout_ms)
+/* find a header value (case-insensitive name) in a raw response */
+static bool header_value(const uint8_t *rx, size_t hdr_end, const char *name, char *out, size_t n)
 {
+    size_t nl = strlen(name);
+    for (size_t i = 0; i + nl + 1 < hdr_end; i++) {
+        if ((i == 0 || rx[i - 1] == '\n') && !strncasecmp((const char *)rx + i, name, nl) && rx[i + nl] == ':') {
+            size_t j = i + nl + 1, k = 0;
+            while (j < hdr_end && rx[j] == ' ') j++;
+            while (j < hdr_end && rx[j] != '\r' && rx[j] != '\n' && k + 1 < n) out[k++] = (char)rx[j++];
+            out[k] = 0;
+            return true;
+        }
+    }
+    return false;
+}
+
+static size_t find_header_end(void)
+{
+    for (size_t i = 0; i + 3 < tc.rx_len; i++)
+        if (!memcmp(tc.rx + i, "\r\n\r\n", 4)) return i + 4;
+    return 0;
+}
+
+int net_http_get_ex(const char *url, char **body, size_t *blen, char *location, size_t locn, int timeout_ms)
+{
+    if (location && locn) location[0] = 0;
     if (!nd || !info.ip) return -1;
-    char host[128], path[256];
+    char host[128], path[512];
     uint16_t port;
     split_url(url, host, sizeof(host), &port, path, sizeof(path));
     uint32_t ip;
@@ -601,22 +625,29 @@ int net_http_get(const char *url, char **body, size_t *blen, int timeout_ms)
         while (tc.state == TCP_SYN_SENT && uptime_ms() < t) sched_wait(&tcp_chan, NULL, 50);
     }
     if (tc.state == TCP_ESTABLISHED) {
-        char req[512];
+        char req[768];
         int n = snprintf(req, sizeof(req),
-                         "GET %s HTTP/1.0\r\nHost: %s\r\nUser-Agent: ZenithOS/" ZENITH_VERSION "\r\nConnection: close\r\n\r\n",
+                         "GET %s HTTP/1.0\r\nHost: %s\r\nUser-Agent: ZenithOS/" ZENITH_VERSION
+                         "\r\nAccept: text/html, text/plain, */*\r\nConnection: close\r\n\r\n",
                          path, host);
         tcp_send_seg(TCP_PSH | TCP_ACK, req, (size_t)n);
         tc.snd_nxt += (uint32_t)n;
-        while (tc.state != TCP_DONE && uptime_ms() < deadline) sched_wait(&tcp_chan, NULL, 50);
-        if (tc.state == TCP_DONE && !tc.rst) {
-            tcp_send_seg(TCP_FIN | TCP_ACK, NULL, 0);
+        size_t want = 0, hdr_end = 0;
+        while (tc.state != TCP_DONE && uptime_ms() < deadline) {
+            sched_wait(&tcp_chan, NULL, 50);
+            if (!hdr_end && (hdr_end = find_header_end())) {
+                char cl[24];
+                if (header_value(tc.rx, hdr_end, "Content-Length", cl, sizeof(cl))) want = (size_t)atoi(cl);
+            }
+            if (hdr_end && want && tc.rx_len >= hdr_end + want) break;
         }
+        tcp_send_seg(TCP_FIN | TCP_ACK, NULL, 0);
         /* parse the response */
         if (tc.rx_len > 12 && !memcmp(tc.rx, "HTTP/", 5)) {
             status = atoi((char *)tc.rx + 9);
-            size_t hdr_end = 0;
-            for (size_t i = 0; i + 3 < tc.rx_len; i++)
-                if (!memcmp(tc.rx + i, "\r\n\r\n", 4)) { hdr_end = i + 4; break; }
+            if (!hdr_end) hdr_end = find_header_end();
+            if (!hdr_end) hdr_end = tc.rx_len;
+            if (location && locn) header_value(tc.rx, hdr_end, "Location", location, locn);
             size_t bl = tc.rx_len - hdr_end;
             char *b = kmalloc(bl + 1);
             memcpy(b, tc.rx + hdr_end, bl);
@@ -630,6 +661,11 @@ int net_http_get(const char *url, char **body, size_t *blen, int timeout_ms)
     tc.state = TCP_CLOSED;
     mutex_unlock(&tcp_mtx);
     return status;
+}
+
+int net_http_get(const char *url, char **body, size_t *blen, int timeout_ms)
+{
+    return net_http_get_ex(url, body, blen, NULL, 0, timeout_ms);
 }
 
 /* ------------------------------------------------------------------------
