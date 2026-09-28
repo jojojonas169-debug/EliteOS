@@ -98,7 +98,7 @@ static void perf_tab(struct sysmon *m, surface_t *s, rect_t area)
     card(s, R(area.x, area.y, cw, 80), "Processor", v, sub, theme.accent);
     uint64_t t = pmm_total_pages() * PAGE_SIZE, f = pmm_free_pages() * PAGE_SIZE;
     snprintf(v, sizeof(v), "%lu MiB", (t - f) >> 20);
-    snprintf(sub, sizeof(sub), "of %lu MiB  ·  heap %lu KiB", t >> 20, heap_used() >> 10);
+    snprintf(sub, sizeof(sub), "of %lu MiB  ·  heap %lu MiB", t >> 20, heap_used() >> 20);
     card(s, R(area.x + (cw + 12), area.y, cw, 80), "Memory", v, sub, theme.success);
     snprintf(v, sizeof(v), "%d", sched_thread_count());
     snprintf(sub, sizeof(sub), "%lu switches/s", m->switch_rate);

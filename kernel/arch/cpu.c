@@ -235,4 +235,8 @@ void isr_dispatch(struct regs *r)
 
     if (c->need_resched && c->ncli == 0)
         sched_preempt();
+    if (r->cs & 3) {
+        void proc_check_killed(void);
+        proc_check_killed();
+    }
 }

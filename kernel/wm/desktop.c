@@ -202,6 +202,11 @@ static void gen_wallpaper(surface_t *s, int style)
     dither(s);
 }
 
+void wallpaper_thumb(surface_t *s, int style)
+{
+    gen_wallpaper(s, style);
+}
+
 static void make_blur(void)
 {
     gfx_blit(wall_blur, 0, 0, wall, 0, 0, SW, SH);

@@ -93,7 +93,7 @@ USER_CFLAGS := -std=gnu11 -O2 -ffreestanding -fno-stack-protector -fno-pic -fno-
 	-mno-red-zone -fno-asynchronous-unwind-tables -fno-math-errno -msse2 -mno-avx \
 	-Wall -Wextra -Wno-unused-parameter -Iuser/libc -MMD -MP
 USER_LDFLAGS := -nostdlib -static -no-pie -Wl,-T,user/user.ld -Wl,-z,max-page-size=0x1000 \
-	-Wl,-z,noexecstack -Wl,--no-warn-rwx-segments
+	-Wl,-z,noexecstack -Wl,--no-warn-rwx-segments -Wl,--build-id=none
 
 LIBC_SRC := $(wildcard user/libc/*.c) $(wildcard user/libc/*.S)
 LIBC_OBJ := $(patsubst %,$(BUILD)/%.o,$(LIBC_SRC))
@@ -116,9 +116,14 @@ $(BUILD)/rootfs/bin/%: $(BUILD)/user/apps/%.c.o $(LIBC_OBJ) user/user.ld
 
 # ---------------------------------------------------------------- images
 
-ROOT_FILES := $(shell find root -type f 2>/dev/null)
+# file names may contain spaces, so track the tree through a manifest
+$(BUILD)/root.manifest: FORCE
+	@mkdir -p $(BUILD)
+	@find root -type f -printf '%P %s %T@\n' | sort > $@.tmp
+	@cmp -s $@.tmp $@ || mv $@.tmp $@
+	@rm -f $@.tmp
 
-$(BUILD)/initrd.tar: $(ROOT_FILES) $(USER_BINS)
+$(BUILD)/initrd.tar: $(BUILD)/root.manifest $(USER_BINS)
 	@mkdir -p $(BUILD)/rootfs
 	@cp -r root/. $(BUILD)/rootfs/
 	@echo "  TAR     $@"
@@ -147,7 +152,7 @@ $(BUILD)/zenithos.iso: $(BUILD)/efiboot.img
 	  --efi-boot efiboot.img -efi-boot-part --efi-boot-image --protective-msdos-label \
 	  -o $@ $(BUILD)/iso 2>/dev/null
 
-.PHONY: all iso kernel run run-fast run-headless clean
+.PHONY: all iso kernel run run-fast run-headless clean FORCE
 .DEFAULT_GOAL := all
 
 all: $(BUILD)/zenithos.iso

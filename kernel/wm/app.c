@@ -58,6 +58,15 @@ const struct app_info *app_find(const char *id)
  * special commands run on their own thread (the caller may hold wm_mtx)
  * ---------------------------------------------------------------------- */
 
+int user_app_main(void *arg)
+{
+    UNUSED(arg);
+    char *argv[] = { "/bin/plasma", NULL };
+    if (!proc_spawn("/bin/plasma", 1, argv, NULL, "/home/user"))
+        wm_notify("Could not start Plasma", "/bin/plasma is missing", ICON_PLASMA);
+    return 0;
+}
+
 static int cmd_thread(void *arg)
 {
     const char *cmd = arg;
