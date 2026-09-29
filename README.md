@@ -35,8 +35,10 @@ Some highlights:
 - **Networking.** An Intel e1000 driver plus a small TCP/IP stack: DHCP, ARP,
   ICMP ping, DNS and HTTP downloads with `wget`.
 - **A web browser.** *Zenith Web* has its own HTML parser and layout engine
-  (headings, paragraphs, lists, links, preformatted text, entities), follows
-  redirects, keeps a history and also opens local `file://` pages and folders.
+  (headings, paragraphs, lists, links, preformatted text, entities, images),
+  follows redirects, keeps a history and also opens local `file://` pages and
+  folders. Its own PNG (with DEFLATE) and JPEG decoders also serve the image
+  viewer and Paint.
 - **Disks that keep your files.** An AHCI (SATA) driver, GPT/MBR partitions
   and a read/write FAT32 file system with long file names. The first volume
   is mounted at `/disk`; files are loaded on demand and written back in the
@@ -68,6 +70,10 @@ Some highlights:
 | Welcome tour | DHCP, ping, DNS and HTTP from the shell |
 | ![Zenith Web](docs/browser.png) | ![Settings](docs/settings.png) |
 | Zenith Web rendering a local HTML page | Settings with live-generated wallpapers |
+| ![Chess](docs/chess.png) | ![Piano](docs/piano.png) |
+| Chess engine searching on four cores | Piano: synthesizer with oscilloscope |
+| ![Installer](docs/installer.png) | ![Pictures in Zenith Web](docs/pictures.png) |
+| Install ZenithOS onto a disk | JPEG and PNG pictures loaded over HTTP |
 
 ## Trying it
 
@@ -209,7 +215,8 @@ Version 1.0 "Aurora". It boots, it is fun, and it is honest about its limits:
   RAM. No NVMe or USB storage yet, and no ext4/NTFS.
 - USB covers keyboards, mice and tablets (no USB 3 hubs).
 - Networking supports Intel e1000-family cards and plain HTTP (no TLS). Zenith
-  Web renders HTML structure only — no CSS, images or JavaScript.
+  Web renders HTML structure and pictures (PNG, baseline JPEG) — no CSS or
+  JavaScript.
 - Sound needs an Intel HD Audio controller; there is no audio input.
 
 ## Credits
