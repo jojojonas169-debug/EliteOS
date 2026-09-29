@@ -6,9 +6,8 @@
 #include <cpu.h>
 #include <net.h>
 #include <audio.h>
+#include <image.h>
 #include "../wm/wm_internal.h"
-
-surface_t *bmp_load(const char *path);
 
 /* ========================================================================
  * Images
@@ -26,11 +25,7 @@ struct viewer {
     bool drag;
 };
 
-static bool is_image(const char *n)
-{
-    size_t l = strlen(n);
-    return l > 4 && !strcasecmp(n + l - 4, ".bmp");
-}
+static bool is_image(const char *n) { return image_is_supported(n); }
 
 static void viewer_scan(struct viewer *v)
 {
@@ -50,7 +45,7 @@ static void viewer_load(struct viewer *v)
     if (v->cur < 0 || v->cur >= v->nfiles) return;
     char p[VFS_PATH_MAX + 64];
     snprintf(p, sizeof(p), "%s/%s", v->dir, v->files[v->cur]);
-    v->img = bmp_load(p);
+    v->img = image_load(p);
 }
 
 static void viewer_paint(app_t *a, surface_t *s)

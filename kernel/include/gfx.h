@@ -83,7 +83,7 @@ void gfx_shadow(surface_t *s, int x, int y, int w, int h, int radius, int spread
 /* fonts: font.c */
 typedef struct font font_t;
 extern font_t *font_ui, *font_ui_md, *font_ui_lg, *font_ui_bold, *font_title,
-              *font_bold_lg, *font_light, *font_huge, *font_mono, *font_mono_bold;
+              *font_bold_lg, *font_light, *font_huge, *font_mono, *font_mono_bold, *font_chess;
 
 void fonts_init(void);
 int  font_height(font_t *f);

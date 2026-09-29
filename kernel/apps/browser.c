@@ -9,20 +9,35 @@
 #include <sched.h>
 #include <vfs.h>
 #include <tty.h>
+#include <image.h>
 
 enum { ST_BODY, ST_H1, ST_H2, ST_H3, ST_PRE, ST_SMALL, ST_BOLD, ST_COUNT };
+#define ST_IMAGE 254
+#define ST_RULE 255
 
 struct box {
     int x, y, w;
+    int16_t h;              /* images only */
     uint8_t style;
     bool italic;
     int16_t link;           /* -1 = none */
-    uint32_t off;           /* into page text pool */
+    uint32_t off;           /* into page text pool; image index for ST_IMAGE */
     uint16_t len;
 };
 
+#define MAX_IMGS 48
+
+enum { IMG_PENDING, IMG_OK, IMG_FAILED };
+
+struct pimg {
+    char *url;
+    surface_t *img;
+    int aw, ah;             /* width/height attributes, 0 if absent */
+    volatile int state;
+};
+
 struct item {
-    uint8_t kind;           /* 0 text, 1 line break, 2 block break, 3 rule, 4 bullet */
+    uint8_t kind;           /* 0 text, 1 line break, 2 block break, 3 rule, 4 bullet, 5 image */
     uint8_t style;
     bool italic;
     bool pre;
@@ -49,6 +64,8 @@ struct page {
     int nboxes;
     int layout_w;
     int height;
+    struct pimg imgs[MAX_IMGS];
+    int nimgs;
 };
 
 struct browser {
@@ -67,6 +84,10 @@ struct browser {
     bool pending_plain;
     app_t *app;
     volatile bool closed;
+    /* images load in the background; a new page bumps the generation */
+    mutex_t img_lock;
+    volatile int page_gen;
+    volatile int img_threads;
 };
 
 /* ------------------------------------------------------------------------
@@ -389,11 +410,27 @@ static void parse_html(struct page *p, const char *h, size_t n, bool plain)
                     }
                 }
             } else if (tag_is(tag, tl, "img") && !closing) {
-                char alt[96];
-                if (attr(attrs, al, "alt", alt, sizeof(alt)) && alt[0]) {
-                    char t[120];
-                    int k = snprintf(t, sizeof(t), "[%s] ", alt);
-                    add_text(p, t, (size_t)k, ST_SMALL, true, false, link);
+                char src[400], num[16];
+                if (attr(attrs, al, "src", src, sizeof(src)) && src[0] && p->nimgs < MAX_IMGS &&
+                    strncmp(src, "data:", 5)) {
+                    struct pimg *im = &p->imgs[p->nimgs];
+                    char full[512];
+                    resolve_url(p->url, src, full, sizeof(full));
+                    im->url = strdup(full);
+                    im->img = NULL;
+                    im->state = IMG_PENDING;
+                    im->aw = attr(attrs, al, "width", num, sizeof(num)) ? (int)strtol(num, NULL, 10) : 0;
+                    im->ah = attr(attrs, al, "height", num, sizeof(num)) ? (int)strtol(num, NULL, 10) : 0;
+                    struct item *it = add_item(p, 5);
+                    if (it) { it->off = (uint32_t)p->nimgs; it->link = (int16_t)link; }
+                    p->nimgs++;
+                } else {
+                    char alt[96];
+                    if (attr(attrs, al, "alt", alt, sizeof(alt)) && alt[0]) {
+                        char t[120];
+                        int k = snprintf(t, sizeof(t), "[%s] ", alt);
+                        add_text(p, t, (size_t)k, ST_SMALL, true, false, link);
+                    }
                 }
             } else if (tag_is(tag, tl, "input") && !closing) {
                 char val[64];
@@ -414,6 +451,13 @@ static void parse_html(struct page *p, const char *h, size_t n, bool plain)
 
 static void page_free(struct page *p)
 {
+    for (int i = 0; i < p->nimgs; i++) {
+        kfree(p->imgs[i].url);
+        surface_free(p->imgs[i].img);
+        p->imgs[i].url = NULL;
+        p->imgs[i].img = NULL;
+    }
+    p->nimgs = 0;
     for (int i = 0; i < p->nlinks; i++) kfree(p->links[i]);
     kfree(p->text);
     memset(p->links, 0, sizeof(p->links));
@@ -450,11 +494,32 @@ static void emit_box(struct page *p, int x, int y, int w, const struct item *it,
     b->x = x;
     b->y = y;
     b->w = w;
+    b->h = 0;
     b->style = it->style;
     b->italic = it->italic;
     b->link = it->link;
     b->off = off;
     b->len = (uint16_t)len;
+}
+
+/* the size an image takes on the page (0x0 while unknown) */
+static void image_size(struct page *p, int idx, int maxw, int *w, int *h)
+{
+    struct pimg *im = &p->imgs[idx];
+    *w = *h = 0;
+    if (im->state == IMG_OK && im->img) {
+        int iw = im->img->w, ih = im->img->h;
+        if (im->aw > 0 && im->ah > 0) { iw = im->aw; ih = im->ah; }
+        else if (im->aw > 0) { ih = ih * im->aw / MAX(iw, 1); iw = im->aw; }
+        else if (im->ah > 0) { iw = iw * im->ah / MAX(ih, 1); ih = im->ah; }
+        if (iw > maxw) { ih = ih * maxw / iw; iw = maxw; }
+        *w = MAX(iw, 1);
+        *h = MAX(ih, 1);
+    } else if (im->aw > 0 && im->ah > 0 && im->state != IMG_FAILED) {
+        *w = MIN(im->aw, maxw);
+        *h = im->ah * *w / im->aw;
+    }
+    *h = MIN(*h, 2000);
 }
 
 static void layout(struct page *p, int width)
@@ -480,12 +545,35 @@ static void layout(struct page *p, int width)
             if (it->kind == 3) {
                 struct item fake = *it;
                 emit_box(p, x0, y, maxw, &fake, 0, 1);
-                p->boxes[p->nboxes - 1].style = 255;
+                p->boxes[p->nboxes - 1].style = ST_RULE;
                 y += 10;
             }
             x = x0 + indent_px + hang;
             asc = def_asc; desc = def_desc; gap = 5;
             line_start_box = p->nboxes;
+            continue;
+        }
+        if (it->kind == 5) {
+            int iw, ih;
+            image_size(p, (int)it->off, maxw - indent_px - hang, &iw, &ih);
+            if (!iw || !ih) continue;
+            if (x + iw > x0 + maxw && x > x0 + indent_px + hang) {
+                y += asc + desc + gap;
+                asc = def_asc; desc = def_desc; gap = 5;
+                x = x0 + indent_px + hang;
+                line_start_box = p->nboxes;
+            }
+            /* the image sits on the baseline: it is all ascent */
+            if (line_start_box == p->nboxes) { asc = ih; desc = 2; gap = 4; }
+            else if (ih > asc) {
+                for (int bi = line_start_box; bi < p->nboxes; bi++) p->boxes[bi].y += ih - asc;
+                asc = ih;
+            }
+            struct item im = *it;
+            im.style = ST_IMAGE;
+            emit_box(p, x, y + asc - ih, iw, &im, it->off, 1);
+            if (p->nboxes) p->boxes[p->nboxes - 1].h = (int16_t)ih;
+            x += iw + 4;
             continue;
         }
         if (it->kind == 4) {
@@ -644,6 +732,84 @@ static int fetch_thread(void *arg)
     return 0;
 }
 
+/* shrink very large pictures so a photo-heavy page does not eat the RAM */
+static surface_t *shrink(surface_t *s, int maxw)
+{
+    if (!s || s->w <= maxw) return s;
+    int nw = maxw, nh = MAX(1, s->h * maxw / s->w);
+    surface_t *d = surface_new(nw, nh);
+    if (!d) return s;
+    for (int y = 0; y < nh; y++) {
+        int y0 = y * s->h / nh, y1 = MAX(y0 + 1, (y + 1) * s->h / nh);
+        for (int x = 0; x < nw; x++) {
+            int x0 = x * s->w / nw, x1 = MAX(x0 + 1, (x + 1) * s->w / nw);
+            uint32_t r = 0, g = 0, bl = 0, al = 0, n = 0;
+            for (int yy = y0; yy < y1; yy += 1 + (y1 - y0) / 4)
+                for (int xx = x0; xx < x1; xx += 1 + (x1 - x0) / 4) {
+                    color_t c = s->px[(size_t)yy * s->stride + xx];
+                    r += C_R(c); g += C_G(c); bl += C_B(c); al += C_A(c); n++;
+                }
+            d->px[(size_t)y * d->stride + x] = RGBA(r / n, g / n, bl / n, al / n);
+        }
+    }
+    surface_free(s);
+    return d;
+}
+
+static void *fetch_bytes(const char *url, size_t *len)
+{
+    if (!strncasecmp(url, "file://", 7)) return vfs_read_file(url + 7, len);
+    if (strncasecmp(url, "http://", 7)) return NULL;
+    char cur[512], loc[512];
+    strlcpy(cur, url, sizeof(cur));
+    for (int redirects = 0; redirects < 4; redirects++) {
+        char *body = NULL;
+        loc[0] = 0;
+        int code = net_http_get_ex(cur, &body, len, loc, sizeof(loc), 10000);
+        if (code >= 300 && code < 400 && loc[0]) {
+            kfree(body);
+            char next[512];
+            resolve_url(cur, loc, next, sizeof(next));
+            strlcpy(cur, next, sizeof(cur));
+            continue;
+        }
+        if (code == 200) return body;
+        kfree(body);
+        return NULL;
+    }
+    return NULL;
+}
+
+static int img_thread(void *arg)
+{
+    struct browser *b = arg;
+    int gen = b->page_gen;
+    for (int i = 0;; i++) {
+        char url[512];
+        mutex_lock(&b->img_lock);
+        bool stale = b->closed || gen != b->page_gen || i >= b->page.nimgs;
+        if (!stale) strlcpy(url, b->page.imgs[i].url, sizeof(url));
+        mutex_unlock(&b->img_lock);
+        if (stale) break;
+        size_t len = 0;
+        void *data = fetch_bytes(url, &len);
+        surface_t *img = data ? shrink(image_decode(data, len), 1600) : NULL;
+        kfree(data);
+        mutex_lock(&b->img_lock);
+        if (!b->closed && gen == b->page_gen && i < b->page.nimgs) {
+            b->page.imgs[i].img = img;
+            b->page.imgs[i].state = img ? IMG_OK : IMG_FAILED;
+            b->page.layout_w = 0;              /* reflow around the new picture */
+            img = NULL;
+        }
+        mutex_unlock(&b->img_lock);
+        surface_free(img);
+        notify_ui(b);
+    }
+    __atomic_fetch_sub(&b->img_threads, 1, __ATOMIC_SEQ_CST);
+    return 0;
+}
+
 /* file:// pages come straight from the VFS; directories get an index page */
 static void load_file(struct browser *b, const char *url, const char *path)
 {
@@ -725,9 +891,12 @@ static void navigate(struct browser *b, const char *target, bool record)
     }
     strlcpy(b->addr, url, sizeof(b->addr));
     if (!strcmp(url, "about:home")) {
+        mutex_lock(&b->img_lock);
+        b->page_gen++;
         page_free(&b->page);
         strlcpy(b->page.url, url, sizeof(b->page.url));
         parse_html(&b->page, home_html, strlen(home_html), false);
+        mutex_unlock(&b->img_lock);
         b->scroll = 0;
         set_status(b, "Home");
         if (b->app->win) wm_set_title(b->app->win, "Zenith Web");
@@ -765,20 +934,28 @@ static void br_paint(app_t *a, surface_t *s)
     int W = s->w, H = s->h;
 
     if (b->loading == 2) {
+        mutex_lock(&b->img_lock);
+        b->page_gen++;
         page_free(&b->page);
         strlcpy(b->page.url, b->pending_url, sizeof(b->page.url));
         strlcpy(b->addr, b->pending_url, sizeof(b->addr));
         parse_html(&b->page, b->pending_body, b->pending_len, b->pending_plain);
+        mutex_unlock(&b->img_lock);
         kfree(b->pending_body);
         b->pending_body = NULL;
         b->scroll = 0;
         b->loading = 0;
+        if (b->page.nimgs) {
+            __atomic_fetch_add(&b->img_threads, 1, __ATOMIC_SEQ_CST);
+            thread_create("web-images", img_thread, b);
+        }
         char title[96];
         const char *host = strstr(b->page.url, "://");
         snprintf(title, sizeof(title), "%s - Zenith Web", b->page.title[0] ? b->page.title : host ? host + 3 : b->page.url);
         wm_set_title(a->win, title);
     }
     int view_h = H - BAR_H - STATUS_H;
+    mutex_lock(&b->img_lock);
     if (b->page.layout_w != W) layout(&b->page, W - 14);
 
     /* page */
@@ -792,9 +969,22 @@ static void br_paint(app_t *a, surface_t *s)
     for (int i = 0; i < b->page.nboxes; i++) {
         struct box *bx = &b->page.boxes[i];
         int y = BAR_H + bx->y - b->scroll;
-        if (y > BAR_H + view_h || y + 40 < BAR_H) continue;
-        if (bx->style == 255) {
+        if (y > BAR_H + view_h || y + MAX(40, bx->h) < BAR_H) continue;
+        if (bx->style == ST_RULE) {
             gfx_fill(&sub, bx->x, y + 4, bx->w, 1, HEX(0xD5D9E6));
+            continue;
+        }
+        if (bx->style == ST_IMAGE) {
+            struct pimg *im = &b->page.imgs[bx->off];
+            if (im->img) gfx_blit_scaled(&sub, R(bx->x, y, bx->w, bx->h), im->img, R(0, 0, im->img->w, im->img->h));
+            else {
+                gfx_fill(&sub, bx->x, y, bx->w, bx->h, HEX(0xE6E8F0));
+                if (bx->w >= 40 && bx->h >= 40) icon_draw(&sub, ICON_IMAGE, bx->x + bx->w / 2 - 14, y + bx->h / 2 - 14, 28);
+            }
+            if (bx->link >= 0 && rect_has(R(bx->x, y, bx->w, bx->h), u->mx, u->my)) {
+                hover = bx->link;
+                gfx_round_outline(&sub, bx->x - 2, y - 2, bx->w + 4, bx->h + 4, 4, HEX(0x2F5BD8));
+            }
             continue;
         }
         font_t *f = style_font(bx->style);
@@ -810,12 +1000,11 @@ static void br_paint(app_t *a, surface_t *s)
         if (bx->style == ST_PRE) gfx_fill(&sub, bx->x, y - 1, bx->w, font_height(f) + 2, HEX(0xECEEF6));
         gfx_text_n(&sub, f, bx->x, y, b->page.text + bx->off, bx->len, c);
     }
+    char target[512] = "";
+    if (hover >= 0) strlcpy(target, b->page.links[hover], sizeof(target));
+    mutex_unlock(&b->img_lock);
     if (hover != b->hover_link) { b->hover_link = hover; u->want_repaint = true; }
-    if (hover >= 0 && u->mreleased && ui_hover(u, R(0, BAR_H, W, view_h))) {
-        char target[512];
-        strlcpy(target, b->page.links[hover], sizeof(target));
-        navigate(b, target, true);
-    }
+    if (hover >= 0 && u->mreleased && ui_hover(u, R(0, BAR_H, W, view_h))) navigate(b, target, true);
     int sc = b->scroll;
     ui_scrollbar(u, R(W - 12, BAR_H + 2, 10, view_h - 4), &sc, MAX(b->page.height, 1), view_h);
     b->scroll = sc;
@@ -873,7 +1062,7 @@ static void br_close(app_t *a)
 {
     struct browser *b = a->data;
     b->closed = true;
-    while (b->fetch_active) sched_sleep(20);
+    while (b->fetch_active || b->img_threads) sched_sleep(20);
     a->quit = true;
 }
 
@@ -883,6 +1072,7 @@ int browser_main(void *arg)
     b->page.items = kmalloc(sizeof(struct item) * MAX_ITEMS);
     b->page.boxes = kmalloc(sizeof(struct box) * MAX_BOXES);
     b->hover_link = -1;
+    b->img_lock = (mutex_t)MUTEX_INIT("web-images");
     app_t a = { 0 };
     b->app = &a;
     a.data = b;

@@ -5,7 +5,7 @@ bitmaps + metrics). The kernel embeds these; no font rasterizer runs at
 boot.
 
 usage: mkfont.py <font.ttf> <pixel-size> <charset> <out.zft>
-charset: full | mono | ascii | digits
+charset: full | mono | ascii | digits | chess
 
 Format (little endian):
   header  : "ZFNT" u16 version u16 size i16 ascent i16 descent i16 line_height
@@ -31,6 +31,8 @@ def charset(name):
              0x2039, 0x203A, 0x25B8, 0x25BE, 0x2303, 0x21B5, 0x23F8, 0x23F5, 0x232B, 0x2326]
     if name == 'ascii':
         return ascii_
+    if name == 'chess':
+        return [0x20] + list(range(0x2654, 0x2660))
     if name == 'digits':
         return [ord(c) for c in " 0123456789:.,-+%/°APMapm"]
     if name == 'full':

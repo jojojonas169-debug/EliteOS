@@ -4,7 +4,7 @@
 
 **A 64-bit operating system written from scratch — with a compositing desktop that uses every CPU core.**
 
-Own UEFI bootloader · own SMP kernel · own drivers · own TCP/IP stack · own web browser · own window system · 19 apps
+Own UEFI bootloader · own SMP kernel · own drivers · own FAT32 · own TCP/IP stack · own sound system · own web browser · own window system · 24 apps · installs itself to disk
 
 ![ZenithOS desktop](docs/showcase.png)
 
@@ -37,9 +37,24 @@ Some highlights:
 - **A web browser.** *Zenith Web* has its own HTML parser and layout engine
   (headings, paragraphs, lists, links, preformatted text, entities), follows
   redirects, keeps a history and also opens local `file://` pages and folders.
+- **Disks that keep your files.** An AHCI (SATA) driver, GPT/MBR partitions
+  and a read/write FAT32 file system with long file names. The first volume
+  is mounted at `/disk`; files are loaded on demand and written back in the
+  background. Wallpaper, accent colour, keyboard layout and volume are saved
+  there too.
+- **It installs itself.** *Install ZenithOS* copies the running system (boot
+  loader, kernel, system image) onto a disk — either next to the files on an
+  existing FAT32 volume or onto a freshly erased disk with a new GPT and EFI
+  System Partition — and the computer then boots from that disk.
+- **Sound.** An Intel High Definition Audio driver (codec discovery, automatic
+  output routing, DMA streaming) feeds a 32-voice software mixer with a
+  synthesizer: eight instruments, system sounds, WAV playback. *Piano* turns
+  the keyboard into an instrument.
 - **USB.** An xHCI host controller driver with hub support and HID keyboards,
   mice and tablets (report descriptors are parsed, keys auto-repeat), next to
   the classic PS/2 path.
+- **Chess on every core.** The chess engine splits its alpha-beta search over
+  all CPU cores.
 - **Anti-aliased everything.** Text uses Roboto and DejaVu Sans Mono,
   pre-rasterised with hinting; icons are drawn as vectors at any size.
 
@@ -65,9 +80,12 @@ On a Debian/Ubuntu machine:
 ```sh
 sudo apt install build-essential clang lld mtools dosfstools xorriso qemu-system-x86 ovmf python3
 make            # -> build/zenithos.iso
-make run        # boots the ISO in QEMU with 4 CPUs and a network card
+make run        # boots the ISO in QEMU: 4 CPUs, network, sound and a 1 GiB SATA disk
 ```
 
+`make run` creates `build/disk.img` (GPT + FAT32) on first use; it shows up as
+`/disk`. After running *Install ZenithOS* (or `install sda` in the terminal),
+`make run-disk` boots the installed system from that disk without the ISO.
 `make run-fast` boots straight from the build tree without making an ISO;
 `make run-usb` attaches the keyboard and mouse over USB (behind a hub) instead of PS/2.
 
@@ -89,9 +107,11 @@ Write the ISO to a USB stick (it is a hybrid image) and boot it in UEFI mode:
 sudo dd if=build/zenithos.iso of=/dev/sdX bs=4M status=progress conv=fsync
 ```
 
-Everything runs from RAM; nothing on your disks is touched. Keyboards and mice
-work over USB (xHCI, also behind hubs) or PS/2. Press a key during the boot countdown to pick a different
-screen resolution; the choice is remembered on writable media.
+The live system runs from RAM. SATA disks with a FAT32 volume are mounted at
+`/disk`, and nothing is written to a disk unless you save files there or run
+the installer. Keyboards and mice work over USB (xHCI, also behind hubs) or
+PS/2; sound works on Intel HD Audio. Press a key during the boot countdown to
+pick a different screen resolution; the installer remembers the current one.
 
 ## Using it
 
@@ -112,18 +132,20 @@ run `layout us` to switch.
 ### Applications
 
 Files · Terminal · Text Editor · System Monitor · Zenith 3D · Mandelbrot ·
-Blocks · Snake · Paint · Calculator · Clock (stopwatch, timer, calendar) ·
-Images · System Log · Zenith Web · Network · Settings · About · Welcome — plus the ring-3
+Blocks · Snake · Chess · Minesweeper · 2048 · Piano · Paint · Calculator ·
+Clock (stopwatch, timer, calendar) · Images · System Log · Zenith Web ·
+Network · Settings · Install ZenithOS · About · Welcome — plus the ring-3
 programs *Plasma* and *Life* that open their own windows.
 
 ### The shell
 
 The terminal runs **zsh** (the Zenith SHell): line editing, history, tab
-completion, `>`/`>>` redirection and about 55 built-in commands, for example
+completion, `>`/`>>` redirection and about 65 built-in commands, for example
 
 ```
 ls -l   cd   cat   grep   tree   hexdump   cp   mv   rm -r   edit
 ps   kill   free   df   uptime   lscpu   lspci   dmesg   neofetch
+lsblk   mount   umount   sync   mkfs   install   play   beep   volume
 ifconfig   dhcp   ping   nslookup   wget   calc   bench   cal   matrix
 ```
 
@@ -164,8 +186,8 @@ kernel/
   mm/        physical page allocator, 4-level paging, kernel heap
   proc/      SMP scheduler, wait channels, mutexes, parallel_for, processes, syscalls
   dev/       ACPI, local APIC + I/O APIC, timers, RTC, PS/2 + vmmouse, xHCI USB + HID,
-             PCI, serial, power
-  fs/        RAM file system with tar initrd loader, terminal line discipline
+             AHCI SATA, block devices + GPT/MBR, HD Audio + mixer/synth, PCI, serial, power
+  fs/        VFS with mount points, RAM file system, tar initrd loader, FAT32, tty
   net/       e1000 driver, Ethernet/ARP/IPv4/ICMP/UDP/TCP, DHCP, DNS, HTTP
   gfx/       2D graphics (anti-aliased shapes, gradients, blur, shadows), font renderer
   wm/        compositing window manager, desktop shell, widgets, vector icons
@@ -174,7 +196,7 @@ user/        libc and ring-3 programs
 tools/       font baking, symbol table generation, headless QEMU test driver
 ```
 
-About 20 000 lines of C, assembly and Python.
+About 27 000 lines of C, assembly and Python.
 
 `tools/qemu-test.py` boots the system headless, types, clicks and takes
 screenshots through QMP — that is how the pictures above were made.
@@ -183,11 +205,12 @@ screenshots through QMP — that is how the pictures above were made.
 
 Version 1.0 "Aurora". It boots, it is fun, and it is honest about its limits:
 
-- The file system lives in RAM: changes are lost at shutdown.
-- USB covers keyboards, mice and tablets (no USB storage or USB 3 hubs).
+- Only `/disk` (FAT32 on SATA) is persistent; the rest of the tree lives in
+  RAM. No NVMe or USB storage yet, and no ext4/NTFS.
+- USB covers keyboards, mice and tablets (no USB 3 hubs).
 - Networking supports Intel e1000-family cards and plain HTTP (no TLS). Zenith
   Web renders HTML structure only — no CSS, images or JavaScript.
-- No sound.
+- Sound needs an Intel HD Audio controller; there is no audio input.
 
 ## Credits
 
@@ -195,5 +218,5 @@ Written by **jojojonas169-debug** with [Claude Code](https://claude.com/claude-c
 ZenithOS replaces the earlier EliteOS project in this repository.
 
 Fonts: [Roboto](https://github.com/googlefonts/roboto) (Apache License 2.0) and
-[DejaVu Sans Mono](https://dejavu-fonts.github.io/) (Bitstream Vera license),
-see `assets/fonts/`.
+[DejaVu Sans / Sans Mono](https://dejavu-fonts.github.io/) (Bitstream Vera license;
+the chess pieces come from DejaVu Sans), see `assets/fonts/`.

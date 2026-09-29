@@ -5,6 +5,9 @@
 #include <sched.h>
 #include <dev.h>
 #include <vfs.h>
+#include <mm.h>
+#include <image.h>
+#include <audio.h>
 
 int welcome_main(void *arg);
 int about_main(void *arg);
@@ -26,6 +29,9 @@ int netinfo_main(void *arg);
 int browser_main(void *arg);
 int installer_main(void *arg);
 int piano_main(void *arg);
+int chess_main(void *arg);
+int mines_main(void *arg);
+int g2048_main(void *arg);
 int user_app_main(void *arg);
 
 const struct app_info app_table[] = {
@@ -37,6 +43,9 @@ const struct app_info app_table[] = {
     { "mandel",   "Mandelbrot",     "Fractal explorer on all CPU cores", ICON_FRACTAL,  mandel_main,    true },
     { "tetris",   "Blocks",         "Falling-blocks puzzle game",        ICON_TETRIS,   tetris_main,    true },
     { "snake",    "Snake",          "The classic snake game",            ICON_SNAKE,    snake_main,     true },
+    { "chess",    "Chess",          "Play against a multi-core engine",  ICON_CHESS,    chess_main,     true },
+    { "mines",    "Minesweeper",    "Clear the field without a bang",    ICON_MINES,    mines_main,     true },
+    { "2048",     "2048",           "Slide and merge the tiles",         ICON_2048,     g2048_main,     true },
     { "piano",    "Piano",          "Play music on eight instruments",   ICON_PIANO,    piano_main,     true },
     { "paint",    "Paint",          "Draw with brushes and colors",      ICON_PAINT,    paint_main,     true },
     { "calc",     "Calculator",     "Scientific calculator",             ICON_CALC,     calc_main,      true },
@@ -122,8 +131,9 @@ static bool ends_with(const char *s, const char *suf)
 
 int file_icon_for(const char *name)
 {
-    if (ends_with(name, ".bmp") || ends_with(name, ".ppm")) return ICON_IMAGE;
+    if (image_is_supported(name)) return ICON_IMAGE;
     if (ends_with(name, ".html") || ends_with(name, ".htm")) return ICON_BROWSER;
+    if (ends_with(name, ".wav")) return ICON_SOUND;
     if (ends_with(name, ".txt") || ends_with(name, ".md") || ends_with(name, ".c") || ends_with(name, ".h") ||
         ends_with(name, ".cfg") || ends_with(name, ".sh") || ends_with(name, ".log"))
         return ICON_TEXT;
@@ -141,8 +151,14 @@ void open_path(const char *path)
     struct vfs_stat st;
     if (vfs_stat(path, &st)) return;
     if (st.type == VN_DIR) { launch_with("files", path); return; }
-    if (ends_with(path, ".bmp") || ends_with(path, ".ppm")) { launch_with("images", path); return; }
+    if (image_is_supported(path)) { launch_with("images", path); return; }
     if (ends_with(path, ".html") || ends_with(path, ".htm")) { launch_with("browser", path); return; }
+    if (ends_with(path, ".wav")) {
+        size_t n;
+        char *d = vfs_read_file(path, &n);
+        if (d) { audio_play_wav(d, n); kfree(d); }
+        return;
+    }
     /* ELF programs start as user processes */
     char magic[4] = { 0 };
     vnode_t *vn = vfs_open(path, false);

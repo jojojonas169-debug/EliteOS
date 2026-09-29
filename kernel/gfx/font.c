@@ -43,9 +43,10 @@ FONT_BLOB(light30)
 FONT_BLOB(light64)
 FONT_BLOB(mono14)
 FONT_BLOB(monob14)
+FONT_BLOB(chess54)
 
 font_t *font_ui, *font_ui_md, *font_ui_lg, *font_ui_bold, *font_title,
-       *font_bold_lg, *font_light, *font_huge, *font_mono, *font_mono_bold;
+       *font_bold_lg, *font_light, *font_huge, *font_mono, *font_mono_bold, *font_chess;
 
 static uint8_t cov_lut[256];
 
@@ -73,6 +74,7 @@ void fonts_init(void)
     load(&f_bold20, _font_bold20, &f_sans18);
     load(&f_light30, _font_light30, &f_sans18);
     load(&f_light64, _font_light64, &f_light30);
+    load(&f_chess54, _font_chess54, &f_light64);
 
     font_ui = &f_sans13;
     font_ui_md = &f_medium13;
@@ -84,6 +86,7 @@ void fonts_init(void)
     font_huge = &f_light64;
     font_mono = &f_mono14;
     font_mono_bold = &f_monob14;
+    font_chess = &f_chess54;
 
     /* slight gamma boost so light text on dark backgrounds does not look thin */
     for (int i = 0; i < 256; i++)

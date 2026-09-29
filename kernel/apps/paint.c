@@ -2,6 +2,7 @@
 #include <wm.h>
 #include <mm.h>
 #include <vfs.h>
+#include <image.h>
 
 enum { T_BRUSH, T_ERASER, T_LINE, T_RECT, T_ELLIPSE, T_FILL, T_PICK, T_COUNT };
 static const char *tool_names[T_COUNT] = { "Brush", "Eraser", "Line", "Rect", "Ellipse", "Fill", "Picker" };
@@ -150,33 +151,20 @@ bool bmp_save(const char *path, surface_t *s)
     return r == 0;
 }
 
+/* opens anything the image decoders understand (PNG, JPEG, BMP); transparent
+ * pixels land on white, since the canvas has no alpha */
 surface_t *bmp_load(const char *path)
 {
-    size_t n;
-    uint8_t *d = (uint8_t *)vfs_read_file(path, &n);
-    if (!d) return NULL;
-    surface_t *s = NULL;
-    if (n > 54 && d[0] == 'B' && d[1] == 'M') {
-        uint32_t off = *(uint32_t *)(d + 10);
-        int32_t w = *(int32_t *)(d + 18), h = *(int32_t *)(d + 22);
-        uint16_t bpp = *(uint16_t *)(d + 28);
-        bool topdown = h < 0;
-        if (h < 0) h = -h;
-        if (w > 0 && h > 0 && w <= 8192 && h <= 8192 && (bpp == 24 || bpp == 32)) {
-            s = surface_new(w, h);
-            size_t stride = bpp == 24 ? (size_t)((w * 3 + 3) & ~3) : (size_t)w * 4;
-            for (int y = 0; s && y < h; y++) {
-                size_t row = topdown ? (size_t)y : (size_t)(h - 1 - y);
-                const uint8_t *src = d + off + row * stride;
-                if (off + row * stride + stride > n) break;
-                for (int x = 0; x < w; x++) {
-                    const uint8_t *px = src + x * (bpp / 8);
-                    s->px[(size_t)y * s->stride + x] = RGB(px[2], px[1], px[0]);
-                }
-            }
+    surface_t *s = image_load(path);
+    if (!s) return NULL;
+    for (int y = 0; y < s->h; y++)
+        for (int x = 0; x < s->w; x++) {
+            color_t c = s->px[(size_t)y * s->stride + x];
+            unsigned a = C_A(c);
+            if (a == 255) continue;
+            s->px[(size_t)y * s->stride + x] = RGB((C_R(c) * a + 255 * (255 - a)) / 255, (C_G(c) * a + 255 * (255 - a)) / 255,
+                                                   (C_B(c) * a + 255 * (255 - a)) / 255);
         }
-    }
-    kfree(d);
     return s;
 }
 

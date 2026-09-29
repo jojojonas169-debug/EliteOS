@@ -287,6 +287,40 @@ void icon_draw(surface_t *s, int icon, int x, int y, int sz)
         gfx_arc(s, P(0.52f, 0.50f), fs * 0.30f, MAX(1.2f, fs * 0.07f), (float)(-K_PI * 0.30), (float)(K_PI * 0.30), c);
         break;
     }
+    case ICON_CHESS: {
+        tile(s, x, y, sz, 0xA78BFA, 0x4C1D95);
+        /* a knight: base, neck and head */
+        color_t c = HEX(0xFBF7EE);
+        gfx_round_rect(s, (int)(fx + fs * 0.26f), (int)(fy + fs * 0.72f), (int)(fs * 0.48f), (int)(fs * 0.11f), MAX(1, sz / 24), c);
+        gfx_triangle(s, P(0.32f, 0.73f), P(0.66f, 0.73f), P(0.62f, 0.40f), c);
+        gfx_triangle(s, P(0.32f, 0.73f), P(0.62f, 0.40f), P(0.40f, 0.30f), c);
+        gfx_triangle(s, P(0.40f, 0.30f), P(0.62f, 0.40f), P(0.55f, 0.17f), c);
+        gfx_triangle(s, P(0.40f, 0.30f), P(0.24f, 0.46f), P(0.35f, 0.53f), c);
+        gfx_circle(s, P(0.47f, 0.33f), MAX(1.0f, fs * 0.035f), HEX(0x4C1D95));
+        break;
+    }
+    case ICON_MINES: {
+        tile(s, x, y, sz, 0x94A3B8, 0x334155);
+        color_t c = HEX(0x111827);
+        for (int k = 0; k < 4; k++) {
+            float ang = (float)k * (float)K_PI / 4.0f;
+            float dx = (float)k_cos(ang) * fs * 0.30f, dy = (float)k_sin(ang) * fs * 0.30f;
+            gfx_line_w(s, fx + fs * 0.5f - dx, fy + fs * 0.5f - dy, fx + fs * 0.5f + dx, fy + fs * 0.5f + dy,
+                       MAX(1.2f, fs * 0.06f), c);
+        }
+        gfx_circle(s, P(0.5f, 0.5f), fs * 0.20f, c);
+        gfx_circle(s, P(0.44f, 0.44f), fs * 0.05f, W);
+        break;
+    }
+    case ICON_2048: {
+        tile(s, x, y, sz, 0xFCD34D, 0xF97316);
+        float g = fs * 0.06f, c = (fs * 0.64f - g) / 2.0f;
+        static const uint32_t cols[4] = { 0xFFFBEB, 0xFDE68A, 0xFFFFFF, 0xFEF3C7 };
+        for (int k = 0; k < 4; k++)
+            gfx_round_rect(s, (int)(fx + fs * 0.18f + (float)(k % 2) * (c + g)), (int)(fy + fs * 0.18f + (float)(k / 2) * (c + g)),
+                           (int)c, (int)c, MAX(1, sz / 16), HEX(cols[k]));
+        break;
+    }
     default:
         tile(s, x, y, sz, 0x7C5CFF, 0x3D2FB8);
         break;

@@ -62,7 +62,7 @@ void parallel_for(int n, void (*fn)(int i, void *ctx), void *ctx)
     if (n <= 0) return;
     mutex_lock(&pool_mtx);
     if (!nworkers && ncpus > 1) {
-        for (int i = 0; i < ncpus - 1; i++) thread_create("worker", worker, NULL);
+        for (int i = 0; i < ncpus - 1; i++) thread_create_ex("worker", worker, NULL, 0, -1, NULL, 128 * 1024);
         nworkers = ncpus - 1;
     }
     struct job j = { fn, ctx, n, 0, 0, 0 };
