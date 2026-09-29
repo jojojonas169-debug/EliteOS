@@ -267,9 +267,9 @@ tools/       font baking, symbol table generation, headless QEMU test driver
 
 About 35 000 lines of C, assembly and Python.
 
-Pushing a `zenithos-v*` tag makes GitHub Actions build the ISO, run the
-tests, boot it in QEMU and publish it as a release
-(`.github/workflows/release.yml`).
+Pushing a `zenithos-v*` tag — or a new tag name in `.github/RELEASE` — makes
+GitHub Actions build the ISO, run the tests, boot it in QEMU and publish it as
+a release (`.github/workflows/release.yml`).
 
 `tools/qemu-test.py` boots the system headless, types, clicks and takes
 screenshots through QMP — that is how the pictures above were made. With
