@@ -124,11 +124,20 @@ make run NIC=rtl8139   # ... with another network adapter (see Network adapters)
 
 ### Real hardware
 
-Write the ISO to a USB stick (it is a hybrid image) and boot it in UEFI mode:
+Ready-made images are on the [Releases](../../releases) page (or build one
+with `make`). The ISO is a UEFI hybrid image, laid out like the big Linux
+distributions' ISOs, so every usual way of making a USB stick works:
 
-```sh
-sudo dd if=build/zenithos.iso of=/dev/sdX bs=4M status=progress conv=fsync
-```
+- **Rufus** (Windows): GPT, UEFI (non CSM), FAT32, then *Write in ISO Image
+  mode* — or *DD Image mode*, both boot.
+- **dd** (Linux/macOS) or balenaEtcher:
+
+  ```sh
+  sudo dd if=build/zenithos.iso of=/dev/sdX bs=4M status=progress conv=fsync
+  ```
+
+Boot the stick's **UEFI** entry with **Secure Boot turned off** (the boot
+loader is not signed).
 
 The live system runs from RAM. SATA disks with a FAT32 volume are mounted at
 `/disk`, and nothing is written to a disk unless you save files there or run
@@ -257,6 +266,10 @@ tools/       font baking, symbol table generation, headless QEMU test driver
 ```
 
 About 35 000 lines of C, assembly and Python.
+
+Pushing a `zenithos-v*` tag makes GitHub Actions build the ISO, run the
+tests, boot it in QEMU and publish it as a release
+(`.github/workflows/release.yml`).
 
 `tools/qemu-test.py` boots the system headless, types, clicks and takes
 screenshots through QMP — that is how the pictures above were made. With

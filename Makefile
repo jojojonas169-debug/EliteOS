@@ -146,12 +146,21 @@ $(BUILD)/efiboot.img: $(BUILD)/esp.stamp
 	@mkfs.fat -n ZENITHOS $@ >/dev/null
 	@mcopy -s -i $@ $(BUILD)/esp/EFI $(BUILD)/esp/zenith ::/
 
+# A UEFI hybrid image, laid out like the big Linux distributions' ISOs:
+#  - the ISO 9660 tree holds the loose files (EFI/BOOT/BOOTX64.EFI, zenith/),
+#    so Rufus in "ISO mode" (and anything else that copies files to a FAT32
+#    stick) produces a bootable stick;
+#  - the FAT image is appended as a GPT EFI System Partition, so the image can
+#    also be written raw (Rufus "DD mode", dd, balenaEtcher) to a USB stick;
+#  - El Torito points at the same partition, so it boots as a CD/DVD too.
 $(BUILD)/zenithos.iso: $(BUILD)/efiboot.img
 	@echo "  ISO     $@"
 	@rm -rf $(BUILD)/iso && mkdir -p $(BUILD)/iso
-	@cp $(BUILD)/efiboot.img $(BUILD)/iso/
-	@xorriso -as mkisofs -R -J -V ZENITHOS \
-	  --efi-boot efiboot.img -efi-boot-part --efi-boot-image --protective-msdos-label \
+	@cp -r $(BUILD)/esp/EFI $(BUILD)/esp/zenith $(BUILD)/iso/
+	@xorriso -as mkisofs -R -J -joliet-long -V ZENITHOS \
+	  -partition_offset 16 \
+	  -append_partition 2 0xef $(BUILD)/efiboot.img -appended_part_as_gpt \
+	  -e --interval:appended_partition_2:all:: -no-emul-boot \
 	  -o $@ $(BUILD)/iso 2>/dev/null
 
 .PHONY: all iso kernel disk test run run-fast run-headless run-usb run-disk clean FORCE

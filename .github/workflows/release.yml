@@ -1,0 +1,79 @@
+name: Release
+
+# Builds the UEFI ISO, checks it and publishes it as a GitHub release when a
+# zenithos-v* tag is pushed:
+#
+#   git tag zenithos-v1.0.1 && git push origin zenithos-v1.0.1
+#
+# The release text comes from .github/release-notes.md.
+
+on:
+  push:
+    tags: ['zenithos-v*']
+
+permissions:
+  contents: write
+
+jobs:
+  iso:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends clang lld mtools dosfstools xorriso \
+            qemu-system-x86 ovmf
+
+      - name: Build the ISO
+        run: make -j"$(nproc)"
+
+      - name: Host tests (crypto, certificates)
+        run: |
+          make test | tee test.log
+          test "$(grep -c '^0 failures' test.log)" -eq 3
+
+      - name: Check the image layout
+        run: |
+          xorriso -indev build/zenithos.iso -find / -type f 2>/dev/null | tee files.txt
+          for f in /EFI/BOOT/BOOTX64.EFI /zenith/kernel.elf /zenith/initrd.tar; do
+            grep -q "'$f'" files.txt || { echo "missing $f"; exit 1; }
+          done
+          xorriso -indev build/zenithos.iso -report_el_torito plain 2>/dev/null | tee eltorito.txt
+          grep -q 'UEFI' eltorito.txt
+
+      - name: Boot it (QEMU, UEFI, from the virtual DVD drive)
+        run: |
+          cp /usr/share/OVMF/OVMF_VARS_4M.fd vars.fd
+          qemu-system-x86_64 -machine q35 -m 1G -smp 2 -display none -serial file:serial.log \
+            -drive if=pflash,format=raw,readonly=on,file=/usr/share/OVMF/OVMF_CODE_4M.fd \
+            -drive if=pflash,format=raw,file=vars.fd \
+            -netdev user,id=n0 -device e1000,netdev=n0 -cdrom build/zenithos.iso &
+          qemu=$!
+          for i in $(seq 1 180); do
+            grep -aq 'boot: done' serial.log 2>/dev/null && break
+            sleep 1
+          done
+          kill $qemu || true
+          grep -a -E 'net:|boot:' serial.log || true
+          grep -aq 'boot: done' serial.log
+
+      - name: Package
+        run: |
+          version="${GITHUB_REF_NAME#zenithos-v}"
+          name="ZenithOS-${version}-x86_64-uefi.iso"
+          mkdir dist
+          cp build/zenithos.iso "dist/$name"
+          (cd dist && sha256sum "$name" > SHA256SUMS.txt && cat SHA256SUMS.txt)
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+          echo "CODENAME=$(sed -n 's/^#define ZENITH_CODENAME *"\(.*\)"/\1/p' kernel/include/kernel.h)" >> "$GITHUB_ENV"
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/* \
+            --title "ZenithOS $VERSION \"$CODENAME\"" \
+            --notes-file .github/release-notes.md \
+            --latest
