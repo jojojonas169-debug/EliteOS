@@ -3,6 +3,7 @@
 #   make            build everything -> build/zenithos.iso
 #   make run        boot the ISO in QEMU (UEFI, 4 CPUs)
 #   make run-fast   boot straight from the build tree (no ISO step)
+#   make run-disk   boot the installed system from build/disk.img (no ISO)
 #   make clean
 #
 # Needs: gcc, binutils, clang + lld (for the UEFI loader), python3,
@@ -152,33 +153,47 @@ $(BUILD)/zenithos.iso: $(BUILD)/efiboot.img
 	  --efi-boot efiboot.img -efi-boot-part --efi-boot-image --protective-msdos-label \
 	  -o $@ $(BUILD)/iso 2>/dev/null
 
-.PHONY: all iso kernel run run-fast run-headless run-usb clean FORCE
+.PHONY: all iso kernel disk run run-fast run-headless run-usb run-disk clean FORCE
 .DEFAULT_GOAL := all
 
 all: $(BUILD)/zenithos.iso
 iso: $(BUILD)/zenithos.iso
 kernel: $(BUILD)/kernel.elf
 
+# a SATA disk that ZenithOS mounts at /disk (and can install itself to)
+DISK_MIB := 1024
+QEMU_DISK := -drive file=$(BUILD)/disk.img,format=raw,if=none,id=hd0 -device ide-hd,drive=hd0,bus=ide.0
+
 QEMU_COMMON := -machine q35 -m 2G -smp 4 -serial stdio \
 	-drive if=pflash,format=raw,readonly=on,file=$(OVMF_CODE) \
 	-drive if=pflash,format=raw,file=$(BUILD)/ovmf_vars.fd \
-	-netdev user,id=n0 -device e1000,netdev=n0
+	-netdev user,id=n0 -device e1000,netdev=n0 $(QEMU_DISK)
+
+disk: $(BUILD)/disk.img
+
+$(BUILD)/disk.img:
+	@mkdir -p $(BUILD)
+	@echo "  DISK    $@"
+	@$(PYTHON) tools/mkdisk.py $@ $(DISK_MIB)
 
 $(BUILD)/ovmf_vars.fd:
 	@mkdir -p $(BUILD)
 	@cp $(OVMF_VARS) $@
 
-run: $(BUILD)/zenithos.iso $(BUILD)/ovmf_vars.fd
+run: $(BUILD)/zenithos.iso $(BUILD)/ovmf_vars.fd $(BUILD)/disk.img
 	$(QEMU) $(QEMU_COMMON) -cdrom $(BUILD)/zenithos.iso
 
-run-fast: $(BUILD)/esp.stamp $(BUILD)/ovmf_vars.fd
+run-fast: $(BUILD)/esp.stamp $(BUILD)/ovmf_vars.fd $(BUILD)/disk.img
 	$(QEMU) $(QEMU_COMMON) -drive format=raw,file=fat:rw:$(BUILD)/esp
 
-run-headless: $(BUILD)/zenithos.iso $(BUILD)/ovmf_vars.fd
+run-headless: $(BUILD)/zenithos.iso $(BUILD)/ovmf_vars.fd $(BUILD)/disk.img
 	$(QEMU) $(QEMU_COMMON) -display none -cdrom $(BUILD)/zenithos.iso
 
+run-disk: $(BUILD)/ovmf_vars.fd $(BUILD)/disk.img
+	$(QEMU) $(QEMU_COMMON)
+
 # same, but keyboard and mouse are USB devices behind a hub (tests the xHCI driver)
-run-usb: $(BUILD)/zenithos.iso $(BUILD)/ovmf_vars.fd
+run-usb: $(BUILD)/zenithos.iso $(BUILD)/ovmf_vars.fd $(BUILD)/disk.img
 	$(QEMU) $(QEMU_COMMON) -cdrom $(BUILD)/zenithos.iso -device qemu-xhci,id=xhci \
 	  -device usb-hub,bus=xhci.0,port=1,id=hub -device usb-kbd,bus=xhci.0,port=1.1 \
 	  -device usb-tablet,bus=xhci.0,port=2

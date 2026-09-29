@@ -65,7 +65,7 @@ int welcome_main(void *arg)
     app_t a = { 0 };
     a.win = wm_create("Welcome", 900, 480, WF_CENTER);
     if (!a.win) return 1;
-    wm_set_icon(a.win, ICON_BROWSER);
+    wm_set_icon(a.win, ICON_HOME);
     a.on_paint = welcome_paint;
     return app_run(&a);
 }

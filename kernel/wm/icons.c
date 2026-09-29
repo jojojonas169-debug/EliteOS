@@ -245,6 +245,27 @@ void icon_draw(surface_t *s, int icon, int x, int y, int sz)
                        MAX(1, sz / 12), HEX(0xC5CCE6));
         gfx_fill(s, (int)(fx + fs * 0.18f), (int)(fy + fs * 0.20f), (int)(fs * 0.64f), MAX(2, sz / 12), HEX(0xC5CCE6));
         break;
+    case ICON_DISK:
+    case ICON_INSTALL: {
+        bool tiled = icon == ICON_INSTALL || sz >= 28;
+        if (icon == ICON_INSTALL) tile(s, x, y, sz, 0x60A5FA, 0x4F46E5);
+        else if (tiled) tile(s, x, y, sz, 0x64748B, 0x1E293B);
+        float top = icon == ICON_INSTALL ? 0.52f : tiled ? 0.30f : 0.24f;
+        float h = icon == ICON_INSTALL ? 0.30f : tiled ? 0.40f : 0.52f;
+        float m = tiled ? 0.18f : 0.06f;
+        int r = MAX(1, sz / 10);
+        gfx_round_rect_grad(s, (int)(fx + fs * m), (int)(fy + fs * top), (int)(fs * (1 - 2 * m)), (int)(fs * h), r,
+                            HEX(0xE2E8F0), HEX(0x94A3B8));
+        gfx_fill(s, (int)(fx + fs * (m + 0.06f)), (int)(fy + fs * (top + h * 0.55f)), (int)(fs * (1 - 2 * m - 0.12f)),
+                 MAX(1, sz / 28), HEX(0x64748B));
+        gfx_circle(s, P(1 - m - 0.12f, top + h * 0.78f), MAX(1.0f, fs * 0.045f), HEX(0x22C55E));
+        if (icon == ICON_INSTALL) {
+            gfx_line_w(s, P(0.5f, 0.14f), P(0.5f, 0.42f), MAX(1.4f, fs * 0.08f), W);
+            gfx_line_w(s, P(0.36f, 0.30f), P(0.5f, 0.44f), MAX(1.4f, fs * 0.08f), W);
+            gfx_line_w(s, P(0.64f, 0.30f), P(0.5f, 0.44f), MAX(1.4f, fs * 0.08f), W);
+        }
+        break;
+    }
     default:
         tile(s, x, y, sz, 0x7C5CFF, 0x3D2FB8);
         break;

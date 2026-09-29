@@ -460,7 +460,7 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE ih, EFI_SYSTEM_TABLE *st)
     /* Load kernel and initrd. */
     puts("  loading kernel...\n");
     uint64_t ksize;
-    uint8_t *kfile = load_file(L"\\zenith\\kernel.elf", &ksize, EfiBootServicesData);
+    uint8_t *kfile = load_file(L"\\zenith\\kernel.elf", &ksize, EfiLoaderData);
     if (!kfile) fatal("\\zenith\\kernel.elf not found", 0);
 
     Elf64_Ehdr *eh = (Elf64_Ehdr *)kfile;
@@ -492,7 +492,9 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE ih, EFI_SYSTEM_TABLE *st)
         memcpy((uint8_t *)kphys + (ph->p_vaddr - vmin), kfile + ph->p_offset, ph->p_filesz);
     }
     uint64_t kentry = eh->e_entry;
-    BS->FreePages((EFI_PHYSICAL_ADDRESS)kfile, (ksize + 4095) / 4096);
+    /* the kernel file stays in memory (for the installer), and so does this loader */
+    uint64_t lsize = 0;
+    void *lfile = load_file(L"\\EFI\\BOOT\\BOOTX64.EFI", &lsize, EfiLoaderData);
 
     puts("  loading initrd...\n");
     uint64_t isize = 0;
@@ -511,6 +513,10 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE ih, EFI_SYSTEM_TABLE *st)
     bi->initrd_size = isize;
     bi->kernel_phys = kphys;
     bi->kernel_size = kpages * 4096;
+    bi->kernel_file_phys = (uint64_t)kfile;
+    bi->kernel_file_size = ksize;
+    bi->loader_file_phys = (uint64_t)lfile;
+    bi->loader_file_size = lfile ? lsize : 0;
     {
         const CHAR16 *v = ST->FirmwareVendor;
         int i = 0;

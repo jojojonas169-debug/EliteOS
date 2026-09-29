@@ -119,6 +119,8 @@ int  wm_screen_w(void);
 int  wm_screen_h(void);
 void wm_notify(const char *title, const char *body, int icon);
 void wm_set_wallpaper(int style);
+void settings_load(void);
+void settings_autosave(void);
 extern int wallpaper_style;
 extern int wallpaper_count;
 extern const char *wallpaper_names[];
@@ -138,7 +140,7 @@ enum {
     ICON_FRACTAL, ICON_TETRIS, ICON_PAINT, ICON_CALC, ICON_CLOCK, ICON_SETTINGS,
     ICON_INFO, ICON_IMAGE, ICON_LOG, ICON_SNAKE, ICON_FOLDER, ICON_FILE, ICON_TEXT,
     ICON_APP, ICON_POWER, ICON_RESTART, ICON_SEARCH, ICON_NETWORK, ICON_HOME,
-    ICON_TRASH, ICON_GAME, ICON_PLASMA, ICON_BROWSER, ICON_LOGOUT, ICON_COUNT,
+    ICON_TRASH, ICON_GAME, ICON_PLASMA, ICON_BROWSER, ICON_LOGOUT, ICON_DISK, ICON_INSTALL, ICON_COUNT,
 };
 void icon_draw(surface_t *s, int icon, int x, int y, int size);
 void logo_draw(surface_t *s, int x, int y, int size, bool swap);

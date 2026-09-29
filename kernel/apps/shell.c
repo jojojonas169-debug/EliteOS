@@ -10,6 +10,7 @@
 #include <dev.h>
 #include <parallel.h>
 #include <net.h>
+#include <block.h>
 
 #define HIST 64
 #define MAXARGS 32
@@ -154,21 +155,14 @@ static int c_cd(struct shell *sh, int argc, char **argv)
     return 0;
 }
 
-static int c_ls(struct shell *sh, int argc, char **argv)
+static int ls_one(struct shell *sh, const char *target, bool lng, bool all, bool header)
 {
-    bool lng = false, all = false;
-    const char *target = ".";
-    for (int i = 1; i < argc; i++) {
-        if (argv[i][0] == '-') {
-            if (strchr(argv[i], 'l')) lng = true;
-            if (strchr(argv[i], 'a')) all = true;
-        } else target = argv[i];
-    }
     char p[VFS_PATH_MAX];
     resolve(sh, target, p);
     struct vfs_stat st;
-    if (vfs_stat(p, &st)) { err(sh, "ls", errstr(E_NOENT)); return 1; }
+    if (vfs_stat(p, &st)) { err(sh, target, errstr(E_NOENT)); return 1; }
     if (st.type != VN_DIR) { pr(sh, "%s\n", vfs_basename(p)); return 0; }
+    if (header) pr(sh, C_BOLD "%s:" C_RESET "\n", target);
     struct vfs_dirent *de = kmalloc(sizeof(*de) * 256);
     int n = vfs_list(p, de, 256);
     int col = 0, width = sh->tty->cols;
@@ -181,7 +175,8 @@ static int c_ls(struct shell *sh, int argc, char **argv)
         char path[VFS_PATH_MAX + 64];
         snprintf(path, sizeof(path), "%s/%s", p, de[i].name);
         vnode_t *vn = NULL;
-        if (de[i].type == VN_FILE && (vn = vfs_open(path, false))) {
+        /* programs have no extension; peeking at other files would read them from disk */
+        if (de[i].type == VN_FILE && !strchr(de[i].name, '.') && de[i].size >= 4 && (vn = vfs_open(path, false))) {
             char m[4] = { 0 };
             vfs_read(vn, 0, m, 4);
             vfs_close(vn);
@@ -205,6 +200,26 @@ static int c_ls(struct shell *sh, int argc, char **argv)
     if (!lng && col) out(sh, "\n", 1);
     kfree(de);
     return 0;
+}
+
+static int c_ls(struct shell *sh, int argc, char **argv)
+{
+    bool lng = false, all = false;
+    int targets = 0;
+    for (int i = 1; i < argc; i++) {
+        if (argv[i][0] == '-') {
+            if (strchr(argv[i], 'l')) lng = true;
+            if (strchr(argv[i], 'a')) all = true;
+        } else targets++;
+    }
+    if (!targets) return ls_one(sh, ".", lng, all, false);
+    int r = 0, k = 0;
+    for (int i = 1; i < argc; i++) {
+        if (argv[i][0] == '-') continue;
+        if (k++) out(sh, "\n", 1);
+        r |= ls_one(sh, argv[i], lng, all, targets > 1);
+    }
+    return r;
 }
 
 static int c_cat(struct shell *sh, int argc, char **argv)
@@ -526,10 +541,82 @@ static int c_free(struct shell *sh, int argc, char **argv)
 static int c_df(struct shell *sh, int argc, char **argv)
 {
     UNUSED(argc); UNUSED(argv);
-    char a[24];
+    char a[24], b[24], c[24];
     human(vfs_total_bytes(), a, sizeof(a));
-    pr(sh, "Filesystem  Type   Used      Mounted on\n");
-    pr(sh, "ramfs       ramfs  %-9s /\n", a);
+    pr(sh, C_BOLD "Filesystem  Type   Size        Used        Avail       Mounted on" C_RESET "\n");
+    pr(sh, "ramfs       ramfs  -           %-11s -           /\n", a);
+    for (struct fs_mount *m = vfs_mounts(); m; m = m->next) {
+        uint64_t total, free;
+        m->ops->statfs(m, &total, &free);
+        human(total, a, sizeof(a));
+        human(total - free, b, sizeof(b));
+        human(free, c, sizeof(c));
+        pr(sh, "%-11s %-6s %-11s %-11s %-11s %s\n", m->dev, m->fstype, a, b, c, m->path);
+    }
+    return 0;
+}
+
+static const char *mount_point_of(struct blockdev *d)
+{
+    for (struct fs_mount *m = vfs_mounts(); m; m = m->next)
+        if (!strcmp(m->dev, d->name)) return m->path;
+    return "";
+}
+
+static int c_lsblk(struct shell *sh, int argc, char **argv)
+{
+    UNUSED(argc); UNUSED(argv);
+    if (!blk_count()) { pr(sh, "no disks found (ZenithOS supports SATA/AHCI disks)\n"); return 0; }
+    pr(sh, C_BOLD "NAME      SIZE       FS      LABEL        MOUNT     MODEL" C_RESET "\n");
+    for (int i = 0; i < blk_count(); i++) {
+        struct blockdev *d = blk_get(i);
+        char sz[24], label[16] = "";
+        blk_format_size(d->sectors * SECTOR_SIZE, sz, sizeof(sz));
+        bool fat = fat_probe(d, label, sizeof(label));
+        pr(sh, "%s%-9s%s %-10s %-7s %-12s %-9s %s\n", d->parent ? "  " : C_BOLD, d->name, C_RESET, sz,
+           fat ? "fat32" : "", label, mount_point_of(d), d->parent ? "" : d->model);
+    }
+    return 0;
+}
+
+static int c_mount(struct shell *sh, int argc, char **argv)
+{
+    if (argc < 3) {
+        if (!vfs_mounts()) pr(sh, "no disk file systems mounted\n");
+        for (struct fs_mount *m = vfs_mounts(); m; m = m->next)
+            pr(sh, "%s on %s type %s (%s)\n", m->dev, m->path, m->fstype, m->label[0] ? m->label : "no label");
+        return 0;
+    }
+    struct blockdev *d = blk_find(argv[1]);
+    if (!d) { err(sh, "mount", "no such device"); return 1; }
+    if (d->busy) { err(sh, "mount", "device is busy"); return 1; }
+    char p[VFS_PATH_MAX];
+    resolve(sh, argv[2], p);
+    int r = fat_mount(d, p);
+    if (r) { err(sh, "mount", "not a FAT32 file system, or the mount point is in use"); return 1; }
+    return 0;
+}
+
+static int c_sync(struct shell *sh, int argc, char **argv)
+{
+    UNUSED(argc); UNUSED(argv);
+    int r = vfs_sync();
+    if (r) { err(sh, "sync", "write error"); return 1; }
+    return 0;
+}
+
+static int c_mkfs(struct shell *sh, int argc, char **argv)
+{
+    if (argc < 2) { err(sh, "mkfs", "usage: mkfs <device> [label]   (see lsblk)"); return 1; }
+    struct blockdev *d = blk_find(argv[1]);
+    if (!d) { err(sh, "mkfs", "no such device"); return 1; }
+    if (d->busy) { err(sh, "mkfs", "device is mounted"); return 1; }
+    for (int i = 0; i < blk_count(); i++)
+        if (blk_get(i)->parent == d && blk_get(i)->busy) { err(sh, "mkfs", "a partition of this disk is mounted"); return 1; }
+    pr(sh, "formatting %s as FAT32...\n", d->name);
+    int r = fat_mkfs(d, argc > 2 ? argv[2] : "ZENITH");
+    if (r) { err(sh, "mkfs", "failed (the device must be at least 33 MiB)"); return 1; }
+    pr(sh, "done. mount it with: mount %s /disk\n", d->name);
     return 0;
 }
 
@@ -922,6 +1009,10 @@ static const struct cmd commands[] = {
     { "uptime", c_uptime, "time since boot" },
     { "free", c_free, "memory usage" },
     { "df", c_df, "file system usage" },
+    { "lsblk", c_lsblk, "list disks and partitions" },
+    { "mount", c_mount, "list or mount file systems" },
+    { "sync", c_sync, "write cached changes to disk" },
+    { "mkfs", c_mkfs, "format a disk or partition (FAT32)" },
     { "ps", c_ps, "list threads and processes" },
     { "kill", c_kill, "terminate a process" },
     { "uname", c_uname, "system name [-a]" },
@@ -1108,6 +1199,7 @@ static int tokenize(char *line, char **argv)
         char q = 0;
         while (*p && (q || (*p != ' ' && *p != '\t'))) {
             if (!q && (*p == '"' || *p == '\'')) { q = *p++; continue; }
+            if (!q && *p == '\\' && p[1]) { p++; *w++ = *p++; continue; }
             if (q && *p == q) { q = 0; p++; continue; }
             *w++ = *p++;
         }

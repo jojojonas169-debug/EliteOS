@@ -1,14 +1,17 @@
 /*
- * In-memory file system (ramfs) with a tar loader for the initrd,
- * device nodes, and path handling.
+ * The VFS: an in-memory tree of vnodes (ramfs) with a tar loader for the
+ * initrd, device nodes and path handling. Disk file systems are mounted
+ * into the same tree: their nodes are filled in lazily through fs_ops->load
+ * and written back by a background syncer.
  */
 #include <vfs.h>
 #include <mm.h>
 #include <dev.h>
+#include <sched.h>
 
 static vnode_t *root;
 static mutex_t vfs_mtx = MUTEX_INIT("vfs");
-static size_t total_bytes;
+static struct fs_mount *mounts;
 
 static int64_t now(void) { return rtc_epoch(); }
 
@@ -25,6 +28,7 @@ static vnode_t *node_new(const char *name, int type)
 static void node_attach(vnode_t *dir, vnode_t *n)
 {
     n->parent = dir;
+    if (dir->mnt) dir->dirty = true;
     /* keep children sorted: directories first, then by name */
     vnode_t **pp = &dir->child;
     while (*pp) {
@@ -47,6 +51,7 @@ static void node_detach(vnode_t *n)
     while (*pp && *pp != n) pp = &(*pp)->sibling;
     if (*pp) *pp = n->sibling;
     n->parent->mtime = now();
+    if (n->parent->mnt) n->parent->dirty = true;
     n->parent = NULL;
     n->sibling = NULL;
 }
@@ -60,12 +65,20 @@ static void node_free(vnode_t *n)
         c->unlinked = true;
         if (!c->refs) node_free(c);
     }
-    if (n->data) {
-        total_bytes -= n->size;
-        kfree(n->data);
-    }
+    if (n->data) kfree(n->data);
     kfree(n);
 }
+
+/* make sure a disk-backed node has its contents in memory */
+static int ensure_loaded(vnode_t *n)
+{
+    if (!n->mnt || n->loaded) return 0;
+    int r = n->mnt->ops->load(n->mnt, n);
+    if (!r) n->loaded = true;
+    return r;
+}
+
+static bool is_mount_root(vnode_t *n) { return n->mnt && n->mnt->root == n; }
 
 static vnode_t *child_named(vnode_t *dir, const char *name, size_t len)
 {
@@ -133,6 +146,7 @@ static vnode_t *walk(const char *path, vnode_t **parent_out, const char **last_o
         last = s;
         parent = cur;
         if (!cur || cur->type != VN_DIR) { cur = NULL; break; }
+        ensure_loaded(cur);
         cur = child_named(cur, s, len);
         if (!cur) {
             /* only the last component may be missing */
@@ -186,6 +200,11 @@ static vnode_t *create_locked(const char *path, int type, int *err)
     name[len] = 0;
     n = node_new(name, type);
     if (!n) { *err = E_NOMEM; return NULL; }
+    if (parent->mnt) {
+        n->mnt = parent->mnt;
+        n->loaded = true;
+        n->dirty = true;
+    }
     node_attach(parent, n);
     *err = 0;
     return n;
@@ -222,15 +241,38 @@ int vfs_mkdir(const char *path)
     return err;
 }
 
+/* free the disk space of a subtree that leaves its file system */
+static void detach_storage(vnode_t *n, bool keep_data)
+{
+    if (keep_data || n->type == VN_DIR) ensure_loaded(n);
+    for (vnode_t *c = n->child; c; c = c->sibling) detach_storage(c, keep_data);
+    if (n->mnt) n->mnt->ops->release(n->mnt, n);
+    if (!n->loaded) { n->size = 0; n->loaded = true; }     /* contents were never read: now empty */
+    n->mnt = NULL;
+    n->ino = 0;
+    n->dirty = false;
+}
+
+/* a subtree moves onto a (different) file system: everything gets written anew */
+static void attach_storage(vnode_t *n, struct fs_mount *m)
+{
+    for (vnode_t *c = n->child; c; c = c->sibling) attach_storage(c, m);
+    n->mnt = m;
+    n->ino = 0;
+    n->loaded = true;
+    n->dirty = m != NULL;
+}
+
 int vfs_unlink(const char *path, bool recursive)
 {
     mutex_lock(&vfs_mtx);
     vnode_t *n = walk(path, NULL, NULL);
     int r = 0;
     if (!n) r = E_NOENT;
-    else if (n == root) r = E_INVAL;
-    else if (n->type == VN_DIR && n->child && !recursive) r = E_NOTEMPTY;
+    else if (n == root || is_mount_root(n)) r = E_INVAL;
+    else if (n->type == VN_DIR && !ensure_loaded(n) && n->child && !recursive) r = E_NOTEMPTY;
     else {
+        if (n->mnt) detach_storage(n, false);
         node_detach(n);
         n->unlinked = true;
         if (!n->refs) node_free(n);
@@ -248,7 +290,7 @@ int vfs_rename(const char *from, const char *to)
     const char *last;
     vnode_t *dst = walk(to, &parent, &last);
     if (!n) r = E_NOENT;
-    else if (n == root) r = E_INVAL;
+    else if (n == root || is_mount_root(n)) r = E_INVAL;
     else if (dst) r = E_EXIST;
     else if (!parent || parent->type != VN_DIR) r = E_NOENT;
     else {
@@ -256,6 +298,13 @@ int vfs_rename(const char *from, const char *to)
         for (vnode_t *p = parent; p; p = p->parent)
             if (p == n) { r = E_INVAL; break; }
         if (!r) {
+            if (n->mnt != parent->mnt) {
+                /* crossing file systems: pull everything into memory, then re-home it */
+                if (n->mnt) detach_storage(n, true);
+                attach_storage(n, parent->mnt);
+            } else if (n->mnt && n->type == VN_DIR) {
+                n->dirty = true;        /* its ".." entry changes */
+            }
             node_detach(n);
             size_t len = 0;
             while (last[len] && last[len] != '/' && len < 63) { n->name[len] = last[len]; len++; }
@@ -284,7 +333,8 @@ long vfs_read(vnode_t *n, uint64_t off, void *buf, size_t len)
     if (n->type == VN_DEV) return n->dev_read ? n->dev_read(n, buf, len, off) : E_IO;
     if (n->type == VN_DIR) return E_ISDIR;
     mutex_lock(&vfs_mtx);
-    long r = 0;
+    long r = ensure_loaded(n);
+    if (r) { mutex_unlock(&vfs_mtx); return r; }
     if (off < n->size) {
         size_t c = MIN(len, n->size - off);
         memcpy(buf, n->data + off, c);
@@ -299,15 +349,14 @@ long vfs_write(vnode_t *n, uint64_t off, const void *buf, size_t len)
     if (n->type == VN_DEV) return n->dev_write ? n->dev_write(n, buf, len, off) : E_IO;
     if (n->type == VN_DIR) return E_ISDIR;
     mutex_lock(&vfs_mtx);
-    long r = ensure_cap(n, off + len);
+    long r = ensure_loaded(n);
+    if (!r) r = ensure_cap(n, off + len);
     if (!r) {
         if (off > n->size) memset(n->data + n->size, 0, off - n->size);
         memcpy(n->data + off, buf, len);
-        if (off + len > n->size) {
-            total_bytes += off + len - n->size;
-            n->size = off + len;
-        }
+        if (off + len > n->size) n->size = off + len;
         n->mtime = now();
+        if (n->mnt) n->dirty = true;
         r = (long)len;
     }
     mutex_unlock(&vfs_mtx);
@@ -318,12 +367,15 @@ int vfs_truncate(vnode_t *n, size_t size)
 {
     if (n->type != VN_FILE) return E_INVAL;
     mutex_lock(&vfs_mtx);
-    int r = ensure_cap(n, size);
+    int r = 0;
+    if (n->mnt && !n->loaded && size == 0) n->loaded = true;   /* no need to read what we throw away */
+    else r = ensure_loaded(n);
+    if (!r) r = ensure_cap(n, size);
     if (!r) {
         if (size > n->size) memset(n->data + n->size, 0, size - n->size);
-        total_bytes = total_bytes - n->size + size;
         n->size = size;
         n->mtime = now();
+        if (n->mnt) n->dirty = true;
     }
     mutex_unlock(&vfs_mtx);
     return r;
@@ -348,6 +400,7 @@ int vfs_readdir(const char *path, int index, struct vfs_dirent *out)
     vnode_t *d = walk(path, NULL, NULL);
     int r = E_NOENT;
     if (d && d->type == VN_DIR) {
+        ensure_loaded(d);
         vnode_t *c = d->child;
         for (int i = 0; c && i < index; i++) c = c->sibling;
         if (c) {
@@ -375,6 +428,7 @@ int vfs_list(const char *path, struct vfs_dirent *out, int max)
         mutex_unlock(&vfs_mtx);
         return d ? E_NOTDIR : E_NOENT;
     }
+    ensure_loaded(d);
     for (vnode_t *c = d->child; c && n < max; c = c->sibling, n++) {
         strlcpy(out[n].name, c->name, sizeof(out[n].name));
         out[n].type = c->type;
@@ -452,7 +506,106 @@ vnode_t *vfs_register_dev(const char *path, dev_read_fn r, dev_write_fn w, void 
     return n;
 }
 
-size_t vfs_total_bytes(void) { return total_bytes; }
+static size_t tree_bytes(vnode_t *n)
+{
+    if (n->mnt) return 0;
+    size_t t = n->type == VN_FILE ? n->size : 0;
+    for (vnode_t *c = n->child; c; c = c->sibling) t += tree_bytes(c);
+    return t;
+}
+
+size_t vfs_total_bytes(void)
+{
+    mutex_lock(&vfs_mtx);
+    size_t t = tree_bytes(root);
+    mutex_unlock(&vfs_mtx);
+    return t;
+}
+
+/* ------------------------------------------------------------------------
+ * mounts
+ * ---------------------------------------------------------------------- */
+
+int vfs_mount(const char *path, struct fs_mount *m, uint32_t root_ino)
+{
+    int r = vfs_mkdir(path);
+    if (r) return r;
+    mutex_lock(&vfs_mtx);
+    vnode_t *n = walk(path, NULL, NULL);
+    if (!n || n->type != VN_DIR || n->child || n->mnt) {
+        mutex_unlock(&vfs_mtx);
+        return E_EXIST;
+    }
+    n->mnt = m;
+    n->ino = root_ino;
+    n->loaded = false;
+    n->dirty = false;
+    m->root = n;
+    strlcpy(m->path, path, sizeof(m->path));
+    struct fs_mount **pp = &mounts;
+    while (*pp) pp = &(*pp)->next;
+    *pp = m;
+    mutex_unlock(&vfs_mtx);
+    klog("vfs: mounted %s (%s, '%s') on %s", m->dev, m->fstype, m->label, path);
+    return 0;
+}
+
+struct fs_mount *vfs_mounts(void) { return mounts; }
+
+struct fs_mount *vfs_mount_of(const char *path)
+{
+    mutex_lock(&vfs_mtx);
+    vnode_t *n = walk(path, NULL, NULL);
+    struct fs_mount *m = n ? n->mnt : NULL;
+    mutex_unlock(&vfs_mtx);
+    return m;
+}
+
+vnode_t *vfs_fs_child(vnode_t *dir, const char *name, int type, size_t size, int64_t mtime, uint32_t ino)
+{
+    vnode_t *n = node_new(name, type);
+    if (!n) return NULL;
+    n->mnt = dir->mnt;
+    n->ino = ino;
+    n->size = type == VN_FILE ? size : 0;
+    n->mtime = mtime;
+    n->loaded = false;
+    int64_t keep = dir->mtime;
+    bool dirty = dir->dirty;
+    node_attach(dir, n);
+    dir->mtime = keep;
+    dir->dirty = dirty;
+    return n;
+}
+
+int vfs_sync(void)
+{
+    int r = 0;
+    mutex_lock(&vfs_mtx);
+    for (struct fs_mount *m = mounts; m; m = m->next) {
+        int e = m->ops->sync(m);
+        if (e) r = e;
+    }
+    mutex_unlock(&vfs_mtx);
+    return r;
+}
+
+static int syncer(void *arg)
+{
+    for (;;) {
+        sched_sleep(1500);
+        if (mounts) vfs_sync();
+    }
+    return 0;
+}
+
+void vfs_start_syncer(void)
+{
+    static bool started;
+    if (started) return;
+    started = true;
+    thread_create("vfs-sync", syncer, NULL);
+}
 
 /* ------------------------------------------------------------------------
  * initrd (ustar)
@@ -496,7 +649,7 @@ void vfs_load_tar(const void *data, size_t size)
         }
         off += 512 + ALIGN_UP(fsize, 512);
     }
-    klog("vfs: initrd unpacked, %d files, %d directories, %lu KiB", files, dirs, total_bytes >> 10);
+    klog("vfs: initrd unpacked, %d files, %d directories, %lu KiB", files, dirs, tree_bytes(root) >> 10);
 }
 
 void vfs_init(void)

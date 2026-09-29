@@ -58,6 +58,11 @@ struct bootinfo {
     uint32_t mmap_count;
     uint32_t boot_flags;
     char     firmware_vendor[64];
+    /* raw boot files, kept in memory so the installer can copy them to a disk */
+    uint64_t kernel_file_phys;
+    uint64_t kernel_file_size;
+    uint64_t loader_file_phys;
+    uint64_t loader_file_size;
     struct boot_mmap_entry mmap[BOOT_MMAP_MAX];
 };
 

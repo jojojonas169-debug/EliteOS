@@ -18,6 +18,7 @@ bool mutex_trylock(mutex_t *m);
 enum { VN_FILE = 1, VN_DIR = 2, VN_DEV = 3 };
 
 typedef struct vnode vnode_t;
+struct fs_mount;
 
 typedef long (*dev_read_fn)(vnode_t *vn, void *buf, size_t len, uint64_t off);
 typedef long (*dev_write_fn)(vnode_t *vn, const void *buf, size_t len, uint64_t off);
@@ -34,6 +35,30 @@ struct vnode {
     void *dev_ctx;
     int refs;
     bool unlinked;
+    /* disk-backed nodes */
+    struct fs_mount *mnt;
+    uint32_t ino;               /* file system private (FAT: first cluster) */
+    bool loaded;                /* file data / directory entries are in memory */
+    bool dirty;                 /* needs writing back */
+};
+
+/* a mounted disk file system; every call is made with the VFS lock held */
+struct fs_ops {
+    int  (*load)(struct fs_mount *m, vnode_t *n);       /* read file data or directory entries */
+    void (*release)(struct fs_mount *m, vnode_t *n);    /* node deleted: free its disk space */
+    int  (*sync)(struct fs_mount *m);                   /* write every dirty node */
+    void (*statfs)(struct fs_mount *m, uint64_t *total, uint64_t *free);
+};
+
+struct fs_mount {
+    const struct fs_ops *ops;
+    void *priv;
+    vnode_t *root;
+    char path[64];
+    char dev[16];
+    char label[16];
+    char fstype[8];
+    struct fs_mount *next;
 };
 
 struct vfs_stat {
@@ -71,6 +96,14 @@ char    *vfs_read_file(const char *path, size_t *size);   /* kmalloc'd, NUL term
 int      vfs_write_file(const char *path, const void *data, size_t size);
 vnode_t *vfs_register_dev(const char *path, dev_read_fn r, dev_write_fn w, void *ctx);
 size_t   vfs_total_bytes(void);
+
+/* mounts */
+int      vfs_mount(const char *path, struct fs_mount *m, uint32_t root_ino);
+struct fs_mount *vfs_mounts(void);
+struct fs_mount *vfs_mount_of(const char *path);
+int      vfs_sync(void);
+vnode_t *vfs_fs_child(vnode_t *dir, const char *name, int type, size_t size, int64_t mtime, uint32_t ino);
+void     vfs_start_syncer(void);
 const char *vfs_basename(const char *path);
 void     vfs_dirname(const char *path, char *out, size_t sz);
 

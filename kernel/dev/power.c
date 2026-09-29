@@ -3,10 +3,13 @@
 #include <dev.h>
 #include <x86.h>
 #include <cpu.h>
+#include <vfs.h>
+#include <sched.h>
 
 void system_reboot(void)
 {
     klog("power: rebooting");
+    if (!panic_in_progress()) vfs_sync();
     cli();
     if (acpi.reset_valid && acpi.reset_space == 1)
         outb((uint16_t)acpi.reset_addr, acpi.reset_value);
@@ -27,6 +30,7 @@ void system_reboot(void)
 void system_poweroff(void)
 {
     klog("power: shutting down");
+    if (!panic_in_progress()) vfs_sync();
     cli();
     if (acpi.s5_valid && acpi.pm1a_cnt) {
         outw((uint16_t)acpi.pm1a_cnt, (uint16_t)(acpi.slp_typa | (1u << 13)));

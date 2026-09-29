@@ -196,12 +196,45 @@ static void files_paint(app_t *a, surface_t *s)
         icon_draw(s, places[i].icon, r.x + 10, r.y + 6, 20);
         gfx_text(s, font_ui, r.x + 40, r.y + 8, places[i].name, theme.text);
     }
-    char used[32];
-    human(vfs_total_bytes(), used, sizeof(used));
-    gfx_text(s, font_ui, 18, H - 52, "RAM disk", theme.text_faint);
-    char line[48];
-    snprintf(line, sizeof(line), "%s used", used);
-    gfx_text(s, font_ui, 18, H - 32, line, theme.text_dim);
+    /* mounted disks */
+    int py = 40 + (int)ARRAY_SIZE(places) * 36 + 10;
+    struct fs_mount *here = NULL;
+    for (struct fs_mount *m = vfs_mounts(); m; m = m->next) {
+        size_t pl = strlen(m->path);
+        if (!strncmp(f->path, m->path, pl) && (f->path[pl] == 0 || f->path[pl] == '/')) here = m;
+    }
+    if (vfs_mounts() && py + 60 < H - 70) {
+        gfx_text(s, font_ui_md, 18, py, "Drives", theme.text_faint);
+        py += 24;
+        for (struct fs_mount *m = vfs_mounts(); m && py + 32 < H - 70; m = m->next, py += 36) {
+            rect_t r = R(8, py, sbw - 16, 32);
+            if (ui_list_item(u, r, !strcmp(f->path, m->path))) go(f, m->path, true);
+            icon_draw(s, ICON_DISK, r.x + 10, r.y + 6, 20);
+            char name[40];
+            snprintf(name, sizeof(name), "%s", m->label[0] ? m->label : m->path + 1);
+            gfx_text_ellipsis(s, font_ui, r.x + 40, r.y + 8, r.w - 46, name, theme.text);
+        }
+    }
+    char line[64], used[32];
+    if (here) {
+        uint64_t total, free;
+        here->ops->statfs(here, &total, &free);
+        char fr[32];
+        human(free, fr, sizeof(fr));
+        human(total, used, sizeof(used));
+        gfx_text_ellipsis(s, font_ui, 18, H - 72, sbw - 30, here->label[0] ? here->label : here->dev, theme.text_faint);
+        snprintf(line, sizeof(line), "%s free of %s", fr, used);
+        gfx_text_ellipsis(s, font_ui, 18, H - 52, sbw - 30, line, theme.text_dim);
+        int bw = sbw - 36;
+        int fill = total ? (int)((total - free) * (uint64_t)bw / total) : 0;
+        gfx_round_rect(s, 18, H - 28, bw, 6, 3, theme.surface2);
+        gfx_round_rect(s, 18, H - 28, MAX(fill, 6), 6, 3, theme.accent);
+    } else {
+        human(vfs_total_bytes(), used, sizeof(used));
+        gfx_text(s, font_ui, 18, H - 52, "RAM disk", theme.text_faint);
+        snprintf(line, sizeof(line), "%s used", used);
+        gfx_text(s, font_ui, 18, H - 32, line, theme.text_dim);
+    }
 
     /* toolbar */
     int tx = sbw + 12;

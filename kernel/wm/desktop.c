@@ -271,6 +271,82 @@ static void acrylic(surface_t *s, rect_t r, int radius, color_t tint)
 
 
 /* ------------------------------------------------------------------------
+ * persistent settings: kept in <first disk>/zenith/settings.cfg
+ * ---------------------------------------------------------------------- */
+
+extern int rtc_utc_offset_min;
+
+struct saved_settings { int wallpaper, accent, transparency, animations, layout, tz; };
+
+static struct saved_settings saved;
+static bool settings_known;
+
+static void settings_current(struct saved_settings *c)
+{
+    c->wallpaper = wallpaper_style;
+    c->accent = accent_index;
+    c->transparency = ui_transparency;
+    c->animations = ui_animations;
+    c->layout = keyboard_layout;
+    c->tz = rtc_utc_offset_min;
+}
+
+static bool settings_path(char *out, size_t n)
+{
+    struct fs_mount *m = vfs_mounts();
+    if (!m) return false;
+    snprintf(out, n, "%s/zenith/settings.cfg", m->path);
+    return true;
+}
+
+void settings_load(void)
+{
+    char path[96];
+    settings_current(&saved);
+    settings_known = true;
+    if (!settings_path(path, sizeof(path))) return;
+    size_t n;
+    char *d = vfs_read_file(path, &n);
+    if (!d) return;
+    for (char *line = d; line && *line;) {
+        char *next = strchr(line, '\n');
+        if (next) *next++ = 0;
+        char *eq = strchr(line, '=');
+        if (eq) {
+            *eq = 0;
+            long v = strtol(eq + 1, NULL, 10);
+            if (!strcmp(line, "wallpaper")) wallpaper_style = CLAMP((int)v, 0, wallpaper_count - 1);
+            else if (!strcmp(line, "accent")) theme_set_accent((int)v);
+            else if (!strcmp(line, "transparency")) ui_transparency = v != 0;
+            else if (!strcmp(line, "animations")) ui_animations = v != 0;
+            else if (!strcmp(line, "layout")) keyboard_layout = CLAMP((int)v, 0, 1);
+            else if (!strcmp(line, "timezone")) rtc_utc_offset_min = CLAMP((int)v, -720, 840);
+        }
+        line = next;
+    }
+    kfree(d);
+    settings_current(&saved);
+    klog("desktop: settings loaded from %s", path);
+}
+
+void settings_autosave(void)
+{
+    struct saved_settings c;
+    settings_current(&c);
+    if (!settings_known || !memcmp(&c, &saved, sizeof(c))) return;
+    saved = c;
+    char path[96], dir[96];
+    if (!settings_path(path, sizeof(path))) return;
+    vfs_dirname(path, dir, sizeof(dir));
+    vfs_mkdir(dir);
+    char buf[256];
+    int len = snprintf(buf, sizeof(buf),
+                       "# ZenithOS settings\nwallpaper=%d\naccent=%d\ntransparency=%d\nanimations=%d\nlayout=%d\ntimezone=%d\n",
+                       c.wallpaper, c.accent, c.transparency, c.animations, c.layout, c.tz);
+    vfs_write_file(path, buf, (size_t)len);
+}
+
+/* ------------------------------------------------------------------------
  * desktop icons
  * ---------------------------------------------------------------------- */
 
@@ -311,6 +387,11 @@ static void load_desktop_icons(void)
     add_dicon("Zenith 3D", ICON_CUBE, "demo3d", NULL);
     add_dicon("Mandelbrot", ICON_FRACTAL, "mandel", NULL);
     add_dicon("Blocks", ICON_TETRIS, "tetris", NULL);
+    for (struct fs_mount *m = vfs_mounts(); m; m = m->next) {
+        char label[48];
+        snprintf(label, sizeof(label), "%s", m->label[0] ? m->label : "Disk");
+        add_dicon(label, ICON_DISK, NULL, m->path);
+    }
     struct vfs_dirent de[12];
     int n = vfs_list("/home/user/Desktop", de, 12);
     for (int i = 0; i < n; i++) {
@@ -1102,6 +1183,7 @@ static void update_clock(void)
     rtc_now(&dt);
     if (dt.second == last_sec) return;
     last_sec = dt.second;
+    settings_autosave();
     char c[16], d[24];
     snprintf(c, sizeof(c), "%02d:%02d", dt.hour, dt.minute);
     snprintf(d, sizeof(d), "%02d.%02d.%04d", dt.day, dt.month, dt.year);
@@ -1183,6 +1265,7 @@ void desktop_init(int w, int h)
         lut_up[i] = (uint8_t)(up * 200.0f);
         lut_dn[i] = (uint8_t)(dn * 230.0f);
     }
+    settings_load();
     uint64_t t0 = uptime_ms();
     gen_wallpaper(wall, wallpaper_style);
     make_blur();
