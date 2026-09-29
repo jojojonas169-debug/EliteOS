@@ -276,10 +276,19 @@ static void acrylic(surface_t *s, rect_t r, int radius, color_t tint)
 
 extern int rtc_utc_offset_min;
 
-struct saved_settings { int wallpaper, accent, transparency, animations, layout, tz; };
+struct saved_settings { int wallpaper, accent, transparency, animations, layout, tz, welcome; };
 
 static struct saved_settings saved;
 static bool settings_known;
+static bool welcome_seen;
+
+/* the Welcome tour opens on the first boot only (when settings can be kept) */
+bool settings_welcome_seen(void)
+{
+    bool seen = welcome_seen;
+    welcome_seen = true;
+    return seen;
+}
 
 static void settings_current(struct saved_settings *c)
 {
@@ -289,6 +298,7 @@ static void settings_current(struct saved_settings *c)
     c->animations = ui_animations;
     c->layout = keyboard_layout;
     c->tz = rtc_utc_offset_min;
+    c->welcome = welcome_seen;
 }
 
 static bool settings_path(char *out, size_t n)
@@ -321,6 +331,7 @@ void settings_load(void)
             else if (!strcmp(line, "animations")) ui_animations = v != 0;
             else if (!strcmp(line, "layout")) keyboard_layout = CLAMP((int)v, 0, 1);
             else if (!strcmp(line, "timezone")) rtc_utc_offset_min = CLAMP((int)v, -720, 840);
+            else if (!strcmp(line, "welcome_seen")) welcome_seen = v != 0;
         }
         line = next;
     }
@@ -341,8 +352,9 @@ void settings_autosave(void)
     vfs_mkdir(dir);
     char buf[256];
     int len = snprintf(buf, sizeof(buf),
-                       "# ZenithOS settings\nwallpaper=%d\naccent=%d\ntransparency=%d\nanimations=%d\nlayout=%d\ntimezone=%d\n",
-                       c.wallpaper, c.accent, c.transparency, c.animations, c.layout, c.tz);
+                       "# ZenithOS settings\nwallpaper=%d\naccent=%d\ntransparency=%d\nanimations=%d\nlayout=%d\ntimezone=%d\n"
+                       "welcome_seen=%d\n",
+                       c.wallpaper, c.accent, c.transparency, c.animations, c.layout, c.tz, c.welcome);
     vfs_write_file(path, buf, (size_t)len);
 }
 
@@ -1196,6 +1208,12 @@ static void update_clock(void)
 
 bool desktop_tick(uint64_t now)
 {
+    static int seen_mounts = -1;
+    if (seen_mounts != vfs_mount_generation()) {
+        seen_mounts = vfs_mount_generation();
+        load_desktop_icons();
+        wm_dirty(R(0, 0, SW, SH));
+    }
     bool anim = false;
     update_clock();
 

@@ -605,6 +605,36 @@ static int c_sync(struct shell *sh, int argc, char **argv)
     return 0;
 }
 
+static int c_umount(struct shell *sh, int argc, char **argv)
+{
+    if (argc < 2) { err(sh, "umount", "usage: umount <mount point>"); return 1; }
+    char p[VFS_PATH_MAX];
+    resolve(sh, argv[1], p);
+    if (vfs_umount(p)) { err(sh, "umount", "not a mount point (or write error)"); return 1; }
+    return 0;
+}
+
+static int c_install(struct shell *sh, int argc, char **argv)
+{
+    bool erase = false;
+    const char *dev = NULL;
+    for (int i = 1; i < argc; i++) {
+        if (!strcmp(argv[i], "--erase")) erase = true;
+        else dev = argv[i];
+    }
+    if (!dev) {
+        err(sh, "install", "usage: install <disk> [--erase]   (see lsblk; without --erase the FAT32 volume is kept)");
+        return 1;
+    }
+    struct blockdev *d = blk_find(dev);
+    if (!d) { err(sh, "install", "no such disk"); return 1; }
+    struct install_progress p = { 0 };
+    pr(sh, "installing ZenithOS on %s%s...\n", d->name, erase ? " (erasing it)" : "");
+    int r = zenith_install(d, erase, &p);
+    pr(sh, "%s%s" C_RESET "\n", r ? C_RED : C_GREEN, p.msg);
+    return r ? 1 : 0;
+}
+
 static int c_mkfs(struct shell *sh, int argc, char **argv)
 {
     if (argc < 2) { err(sh, "mkfs", "usage: mkfs <device> [label]   (see lsblk)"); return 1; }
@@ -1013,6 +1043,8 @@ static const struct cmd commands[] = {
     { "mount", c_mount, "list or mount file systems" },
     { "sync", c_sync, "write cached changes to disk" },
     { "mkfs", c_mkfs, "format a disk or partition (FAT32)" },
+    { "umount", c_umount, "unmount a disk" },
+    { "install", c_install, "install ZenithOS to a disk" },
     { "ps", c_ps, "list threads and processes" },
     { "kill", c_kill, "terminate a process" },
     { "uname", c_uname, "system name [-a]" },

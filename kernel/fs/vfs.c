@@ -12,6 +12,7 @@
 static vnode_t *root;
 static mutex_t vfs_mtx = MUTEX_INIT("vfs");
 static struct fs_mount *mounts;
+static int mount_gen;
 
 static int64_t now(void) { return rtc_epoch(); }
 
@@ -545,12 +546,55 @@ int vfs_mount(const char *path, struct fs_mount *m, uint32_t root_ino)
     struct fs_mount **pp = &mounts;
     while (*pp) pp = &(*pp)->next;
     *pp = m;
+    mount_gen++;
     mutex_unlock(&vfs_mtx);
     klog("vfs: mounted %s (%s, '%s') on %s", m->dev, m->fstype, m->label, path);
     return 0;
 }
 
 struct fs_mount *vfs_mounts(void) { return mounts; }
+int vfs_mount_generation(void) { return mount_gen; }
+
+/* nodes of an unmounted file system stay valid for whoever still has them open */
+static void orphan(vnode_t *n)
+{
+    for (vnode_t *c = n->child; c; c = c->sibling) orphan(c);
+    if (!n->loaded) { n->size = 0; n->loaded = true; }
+    n->mnt = NULL;
+    n->dirty = false;
+}
+
+int vfs_umount(const char *path)
+{
+    mutex_lock(&vfs_mtx);
+    vnode_t *n = walk(path, NULL, NULL);
+    if (!n || !is_mount_root(n)) {
+        mutex_unlock(&vfs_mtx);
+        return E_INVAL;
+    }
+    struct fs_mount *m = n->mnt;
+    int r = m->ops->sync(m);
+    while (n->child) {
+        vnode_t *c = n->child;
+        n->child = c->sibling;
+        orphan(c);
+        c->parent = NULL;
+        c->sibling = NULL;
+        c->unlinked = true;
+        if (!c->refs) node_free(c);
+    }
+    n->mnt = NULL;
+    n->ino = 0;
+    n->loaded = true;
+    n->dirty = false;
+    for (struct fs_mount **pp = &mounts; *pp; pp = &(*pp)->next)
+        if (*pp == m) { *pp = m->next; break; }
+    mount_gen++;
+    klog("vfs: unmounted %s from %s", m->dev, m->path);
+    if (m->ops->unmount) m->ops->unmount(m);
+    mutex_unlock(&vfs_mtx);
+    return r;
+}
 
 struct fs_mount *vfs_mount_of(const char *path)
 {

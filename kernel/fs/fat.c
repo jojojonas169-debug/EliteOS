@@ -595,11 +595,20 @@ static void fat_statfs(struct fs_mount *m, uint64_t *total, uint64_t *free)
     *free = (uint64_t)(f->free_count == 0xFFFFFFFF ? 0 : f->free_count) * f->csize;
 }
 
+static void fat_unmount(struct fs_mount *m)
+{
+    struct fat *f = m->priv;
+    f->dev->busy = false;
+    kfree(f->clbuf);
+    kfree(f);
+}
+
 static const struct fs_ops fat_ops = {
     .load = fat_load,
     .release = fat_release,
     .sync = fat_sync,
     .statfs = fat_statfs,
+    .unmount = fat_unmount,
 };
 
 /* ------------------------------------------------------------------------

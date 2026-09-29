@@ -73,6 +73,8 @@ static bool press_logic(ui_t *u, rect_t r, uint64_t id, bool *hover_out, bool *h
     if (hover && u->mpressed) u->active = id;
     bool held = u->active == id && u->mdown;
     bool clicked = u->mreleased && u->active == id && hover;
+    /* a click usually changes state that was already painted this frame */
+    if (clicked) u->want_repaint = true;
     if (hover_out) *hover_out = hover;
     if (held_out) *held_out = held;
     return clicked;

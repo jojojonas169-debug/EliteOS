@@ -1362,6 +1362,6 @@ static int boot_apps(void *arg)
 {
     UNUSED(arg);
     sched_sleep(400);
-    app_launch("welcome");
+    if (!settings_welcome_seen()) app_launch("welcome");
     return 0;
 }

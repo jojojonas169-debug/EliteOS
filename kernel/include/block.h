@@ -48,5 +48,15 @@ void fat_automount(void);
 
 /* gpt helpers used by the installer */
 int  gpt_create_single(struct blockdev *disk, const char *part_name, bool esp);
+int  part_make_bootable(struct blockdev *part);
+
+/* installer (apps/installer.c) */
+struct install_progress {
+    volatile int step, nsteps;
+    volatile int pct;
+    volatile bool done, failed;
+    char msg[96];
+};
+int zenith_install(struct blockdev *disk, bool erase, struct install_progress *p);
 
 #endif

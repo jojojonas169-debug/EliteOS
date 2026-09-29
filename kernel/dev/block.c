@@ -270,3 +270,50 @@ int gpt_create_single(struct blockdev *disk, const char *part_name, bool esp)
     if (!r) blk_rescan(disk);
     return r;
 }
+
+/* mark a partition as an EFI System Partition so every firmware boots from it */
+int part_make_bootable(struct blockdev *part)
+{
+    struct blockdev *disk = part->parent;
+    if (!disk) return 0;                            /* whole-disk file system: nothing to mark */
+    if (!part->type_guid[0] && !part->type_guid[1] && part->mbr_type) {
+        uint8_t *sec = kmalloc(SECTOR_SIZE);
+        int r = blk_read(disk, 0, 1, sec);
+        if (!r && part->partno >= 1 && part->partno <= 4) {
+            sec[446 + (part->partno - 1) * 16 + 4] = 0xEF;
+            r = blk_write(disk, 0, 1, sec);
+        }
+        kfree(sec);
+        if (!r) part->mbr_type = 0xEF;
+        return r;
+    }
+    if (!memcmp(part->type_guid, guid_esp, 16)) return 0;
+    uint8_t *hdr = kmalloc(SECTOR_SIZE);
+    int r = blk_read(disk, 1, 1, hdr);
+    if (r || memcmp(hdr, "EFI PART", 8)) { kfree(hdr); return E_INVAL; }
+    uint32_t nents = *(uint32_t *)(hdr + 80), esz = *(uint32_t *)(hdr + 84);
+    uint64_t alt = *(uint64_t *)(hdr + 32);
+    uint32_t secs = (nents * esz + SECTOR_SIZE - 1) / SECTOR_SIZE;
+    uint8_t *ents = kmalloc((size_t)secs * SECTOR_SIZE);
+    for (int copy = 0; copy < 2 && !r; copy++) {
+        uint64_t hl = copy ? alt : 1;
+        r = blk_read(disk, hl, 1, hdr);
+        if (r || memcmp(hdr, "EFI PART", 8)) { r = copy ? 0 : E_INVAL; break; }   /* no backup: fine */
+        uint64_t el = *(uint64_t *)(hdr + 72);
+        r = blk_read(disk, el, secs, ents);
+        if (r) break;
+        memcpy(ents + (size_t)(part->partno - 1) * esz, guid_esp, 16);
+        *(uint32_t *)(hdr + 88) = crc32(0, ents, (size_t)nents * esz);
+        *(uint32_t *)(hdr + 16) = 0;
+        *(uint32_t *)(hdr + 16) = crc32(0, hdr, *(uint32_t *)(hdr + 12));
+        r = blk_write(disk, el, secs, ents);
+        if (!r) r = blk_write(disk, hl, 1, hdr);
+    }
+    kfree(ents);
+    kfree(hdr);
+    if (!r) {
+        memcpy(part->type_guid, guid_esp, 16);
+        blk_flush(disk);
+    }
+    return r;
+}

@@ -121,6 +121,7 @@ void wm_notify(const char *title, const char *body, int icon);
 void wm_set_wallpaper(int style);
 void settings_load(void);
 void settings_autosave(void);
+bool settings_welcome_seen(void);
 extern int wallpaper_style;
 extern int wallpaper_count;
 extern const char *wallpaper_names[];

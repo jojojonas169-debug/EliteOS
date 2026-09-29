@@ -48,6 +48,7 @@ struct fs_ops {
     void (*release)(struct fs_mount *m, vnode_t *n);    /* node deleted: free its disk space */
     int  (*sync)(struct fs_mount *m);                   /* write every dirty node */
     void (*statfs)(struct fs_mount *m, uint64_t *total, uint64_t *free);
+    void (*unmount)(struct fs_mount *m);                /* after the final sync; frees m */
 };
 
 struct fs_mount {
@@ -99,6 +100,8 @@ size_t   vfs_total_bytes(void);
 
 /* mounts */
 int      vfs_mount(const char *path, struct fs_mount *m, uint32_t root_ino);
+int      vfs_umount(const char *path);
+int      vfs_mount_generation(void);                   /* changes on every mount/umount */
 struct fs_mount *vfs_mounts(void);
 struct fs_mount *vfs_mount_of(const char *path);
 int      vfs_sync(void);

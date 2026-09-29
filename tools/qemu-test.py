@@ -135,6 +135,7 @@ def main():
     ap.add_argument('--time', type=float, default=15)
     ap.add_argument('--res', default='1280x800')
     ap.add_argument('--extra', default='')
+    ap.add_argument('--disk', help='raw disk image attached as a SATA drive')
     args = ap.parse_args()
 
     os.makedirs(args.out, exist_ok=True)
@@ -147,10 +148,14 @@ def main():
     cmd = ['qemu-system-x86_64', '-machine', 'q35', '-m', args.mem, '-smp', args.smp,
            '-drive', 'if=pflash,format=raw,readonly=on,file=/usr/share/OVMF/OVMF_CODE_4M.fd',
            '-drive', f'if=pflash,format=raw,file={vars_path}',
-           '-cdrom', args.iso, '-display', 'none', '-serial', f'file:{serial_log}',
+           '-display', 'none', '-serial', f'file:{serial_log}',
            '-qmp', f'unix:{qmp_path},server,nowait',
            '-netdev', 'user,id=n0', '-device', 'e1000,netdev=n0',
            '-accel', 'tcg,thread=multi']
+    if args.iso != 'none':
+        cmd += ['-cdrom', args.iso]
+    if args.disk:
+        cmd += ['-drive', f'file={args.disk},format=raw,if=none,id=hd0', '-device', 'ide-hd,drive=hd0,bus=ide.0']
     if args.extra:
         cmd += args.extra.split()
     q = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
