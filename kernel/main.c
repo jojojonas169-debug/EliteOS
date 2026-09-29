@@ -13,6 +13,7 @@
 #include <vfs.h>
 #include <wm.h>
 #include <block.h>
+#include <audio.h>
 
 struct bootinfo *boot_info;
 
@@ -54,6 +55,7 @@ NORETURN void kmain(struct bootinfo *bi)
     ps2_init();
     usb_init();
     ahci_init();
+    audio_init();
     net_init();
 
     bootcon_status("File system", 70);

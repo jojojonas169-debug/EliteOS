@@ -9,6 +9,7 @@
  * framebuffer.
  */
 #include "wm_internal.h"
+#include <audio.h>
 #include <dev.h>
 #include <mm.h>
 #include <sched.h>
@@ -1362,6 +1363,7 @@ static int boot_apps(void *arg)
 {
     UNUSED(arg);
     sched_sleep(400);
+    audio_sound(SND_STARTUP);
     if (!settings_welcome_seen()) app_launch("welcome");
     return 0;
 }

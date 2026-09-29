@@ -168,6 +168,8 @@ def main():
             st = st.strip()
             if not st or st.startswith('#'):
                 continue
+            if os.environ.get('QT_VERBOSE'):
+                print('step:', st, file=sys.stderr, flush=True)
             op, *rest = st.split(maxsplit=1)
             a = rest[0].split() if rest else []
             if op == 'wait':

@@ -167,7 +167,7 @@ QEMU_DISK := -drive file=$(BUILD)/disk.img,format=raw,if=none,id=hd0 -device ide
 QEMU_COMMON := -machine q35 -m 2G -smp 4 -serial stdio \
 	-drive if=pflash,format=raw,readonly=on,file=$(OVMF_CODE) \
 	-drive if=pflash,format=raw,file=$(BUILD)/ovmf_vars.fd \
-	-netdev user,id=n0 -device e1000,netdev=n0 $(QEMU_DISK)
+	-netdev user,id=n0 -device e1000,netdev=n0 -device intel-hda -device hda-duplex $(QEMU_DISK)
 
 disk: $(BUILD)/disk.img
 

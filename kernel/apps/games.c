@@ -1,5 +1,6 @@
 /* Games: Blocks (falling-blocks puzzle) and Snake. */
 #include <wm.h>
+#include <audio.h>
 #include <mm.h>
 
 /* ========================================================================
@@ -74,6 +75,7 @@ static void spawn(struct blocks *b)
     b->held = false;
     if (!fits(b, b->cur, b->rot, b->px, b->py)) {
         b->over = true;
+        audio_sound(SND_ERROR);
         if (b->score > b->best) b->best = b->score;
     }
 }
@@ -108,6 +110,7 @@ static void lock_piece(struct blocks *b)
         b->lines += b->nclear;
         b->level = 1 + b->lines / 10;
         b->clear_t = uptime_ms();
+        audio_sound(SND_SUCCESS);
     }
     spawn(b);
 }
@@ -397,13 +400,13 @@ static int snake_event(app_t *a, struct gui_event *ev)
     int ny = s->y[0] + (s->dir == 1 ? 1 : s->dir == 3 ? -1 : 0);
     if (nx < 0 || ny < 0 || nx >= SW_ || ny >= SH_) { s->over = true; }
     for (int i = 0; i < s->len - 1 && !s->over; i++) if (s->x[i] == nx && s->y[i] == ny) s->over = true;
-    if (s->over) { if (s->score > s->best) s->best = s->score; return 1; }
+    if (s->over) { if (s->score > s->best) s->best = s->score; audio_sound(SND_ERROR); return 1; }
     bool eat = nx == s->fx && ny == s->fy;
     if (eat && s->len < SMAX) s->len++;
     for (int i = s->len - 1; i > 0; i--) { s->x[i] = s->x[i - 1]; s->y[i] = s->y[i - 1]; }
     s->x[0] = nx;
     s->y[0] = ny;
-    if (eat) { s->score++; place_food(s); }
+    if (eat) { s->score++; place_food(s); audio_sound(SND_POP); }
     return 1;
 }
 

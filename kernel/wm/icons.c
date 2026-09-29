@@ -266,6 +266,27 @@ void icon_draw(surface_t *s, int icon, int x, int y, int sz)
         }
         break;
     }
+    case ICON_PIANO: {
+        tile(s, x, y, sz, 0xF472B6, 0x7C3AED);
+        float kx0 = fx + fs * 0.16f, kw = fs * 0.68f / 5.0f, ky = fy + fs * 0.24f, kh = fs * 0.54f;
+        for (int k = 0; k < 5; k++)
+            gfx_round_rect(s, (int)(kx0 + kw * (float)k + 0.5f), (int)ky, MAX(1, (int)kw - 1), (int)kh, MAX(1, sz / 24), W);
+        static const int blacks[] = { 1, 2, 4 };
+        for (int k = 0; k < 3; k++)
+            gfx_round_rect(s, (int)(kx0 + kw * (float)blacks[k] - kw * 0.32f), (int)ky, MAX(1, (int)(kw * 0.64f)),
+                           (int)(kh * 0.58f), MAX(1, sz / 32), HEX(0x2A1B4A));
+        break;
+    }
+    case ICON_SOUND: {
+        color_t c = sz >= 28 ? W : 0xFFE9EBF8u;
+        if (sz >= 28) tile(s, x, y, sz, 0x34D399, 0x0EA5E9);
+        gfx_fill(s, (int)(fx + fs * 0.18f), (int)(fy + fs * 0.38f), (int)(fs * 0.16f), (int)(fs * 0.24f), c);
+        gfx_triangle(s, P(0.30f, 0.38f), P(0.52f, 0.18f), P(0.52f, 0.82f), c);
+        gfx_triangle(s, P(0.30f, 0.38f), P(0.52f, 0.82f), P(0.30f, 0.62f), c);
+        gfx_arc(s, P(0.52f, 0.50f), fs * 0.16f, MAX(1.2f, fs * 0.07f), (float)(-K_PI * 0.30), (float)(K_PI * 0.30), c);
+        gfx_arc(s, P(0.52f, 0.50f), fs * 0.30f, MAX(1.2f, fs * 0.07f), (float)(-K_PI * 0.30), (float)(K_PI * 0.30), c);
+        break;
+    }
     default:
         tile(s, x, y, sz, 0x7C5CFF, 0x3D2FB8);
         break;

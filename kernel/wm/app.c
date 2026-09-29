@@ -25,6 +25,7 @@ int settings_main(void *arg);
 int netinfo_main(void *arg);
 int browser_main(void *arg);
 int installer_main(void *arg);
+int piano_main(void *arg);
 int user_app_main(void *arg);
 
 const struct app_info app_table[] = {
@@ -36,6 +37,7 @@ const struct app_info app_table[] = {
     { "mandel",   "Mandelbrot",     "Fractal explorer on all CPU cores", ICON_FRACTAL,  mandel_main,    true },
     { "tetris",   "Blocks",         "Falling-blocks puzzle game",        ICON_TETRIS,   tetris_main,    true },
     { "snake",    "Snake",          "The classic snake game",            ICON_SNAKE,    snake_main,     true },
+    { "piano",    "Piano",          "Play music on eight instruments",   ICON_PIANO,    piano_main,     true },
     { "paint",    "Paint",          "Draw with brushes and colors",      ICON_PAINT,    paint_main,     true },
     { "calc",     "Calculator",     "Scientific calculator",             ICON_CALC,     calc_main,      true },
     { "clock",    "Clock",          "Clock, calendar and stopwatch",     ICON_CLOCK,    clock_main,     true },

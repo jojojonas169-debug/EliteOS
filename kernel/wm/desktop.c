@@ -4,6 +4,7 @@
  * All functions run on the compositor thread with wm_mtx held.
  */
 #include "wm_internal.h"
+#include <audio.h>
 #include <dev.h>
 #include <mm.h>
 #include <cpu.h>
@@ -276,7 +277,7 @@ static void acrylic(surface_t *s, rect_t r, int radius, color_t tint)
 
 extern int rtc_utc_offset_min;
 
-struct saved_settings { int wallpaper, accent, transparency, animations, layout, tz, welcome; };
+struct saved_settings { int wallpaper, accent, transparency, animations, layout, tz, welcome, volume, muted; };
 
 static struct saved_settings saved;
 static bool settings_known;
@@ -299,6 +300,8 @@ static void settings_current(struct saved_settings *c)
     c->layout = keyboard_layout;
     c->tz = rtc_utc_offset_min;
     c->welcome = welcome_seen;
+    c->volume = audio_volume();
+    c->muted = audio_muted();
 }
 
 static bool settings_path(char *out, size_t n)
@@ -332,6 +335,8 @@ void settings_load(void)
             else if (!strcmp(line, "layout")) keyboard_layout = CLAMP((int)v, 0, 1);
             else if (!strcmp(line, "timezone")) rtc_utc_offset_min = CLAMP((int)v, -720, 840);
             else if (!strcmp(line, "welcome_seen")) welcome_seen = v != 0;
+            else if (!strcmp(line, "volume")) audio_set_volume((int)v);
+            else if (!strcmp(line, "muted")) audio_set_muted(v != 0);
         }
         line = next;
     }
@@ -353,8 +358,8 @@ void settings_autosave(void)
     char buf[256];
     int len = snprintf(buf, sizeof(buf),
                        "# ZenithOS settings\nwallpaper=%d\naccent=%d\ntransparency=%d\nanimations=%d\nlayout=%d\ntimezone=%d\n"
-                       "welcome_seen=%d\n",
-                       c.wallpaper, c.accent, c.transparency, c.animations, c.layout, c.tz, c.welcome);
+                       "welcome_seen=%d\nvolume=%d\nmuted=%d\n",
+                       c.wallpaper, c.accent, c.transparency, c.animations, c.layout, c.tz, c.welcome, c.volume, c.muted);
     vfs_write_file(path, buf, (size_t)len);
 }
 
@@ -461,7 +466,36 @@ static int cpu_hist[48];
 static uint64_t last_cpu_sample;
 static char clock_str[16], date_str[24];
 static int last_sec = -1;
-static rect_t tray_clock_r, tray_cpu_r, tray_kbd_r, tray_net_r, tray_show_r;
+static rect_t tray_clock_r, tray_cpu_r, tray_kbd_r, tray_net_r, tray_show_r, tray_snd_r;
+static uint64_t osd_until;            /* volume on-screen display */
+
+static rect_t osd_rect(void) { return R(SW - 300, SH - TB_H - 76, 280, 60); }
+
+static void osd_show(void)
+{
+    osd_until = uptime_ms() + 1500;
+    wm_dirty(osd_rect());
+    wm_dirty(tray_snd_r);
+}
+
+static void draw_osd(surface_t *s, rect_t clip)
+{
+    if (!osd_until) return;
+    rect_t r = osd_rect();
+    if (!rect_overlaps(r, clip)) return;
+    gfx_shadow(s, r.x, r.y + 4, r.w, r.h, 14, 18, 110);
+    gfx_round_rect(s, r.x, r.y, r.w, r.h, 14, ALPHA(0x1B1F33, 240));
+    gfx_round_outline(s, r.x, r.y, r.w, r.h, 14, ALPHA(0xFFFFFF, 20));
+    icon_draw(s, ICON_SOUND, r.x + 14, r.y + 18, 24);
+    int bx = r.x + 52, bw = r.w - 110;
+    gfx_round_rect(s, bx, r.y + 27, bw, 6, 3, ALPHA(0xFFFFFF, 30));
+    int v = audio_muted() ? 0 : audio_volume();
+    gfx_round_rect(s, bx, r.y + 27, MAX(6, bw * v / 100), 6, 3, theme.accent);
+    char t[16];
+    if (audio_muted()) strcpy(t, "Muted");
+    else snprintf(t, sizeof(t), "%d%%", v);
+    gfx_text(s, font_ui_md, bx + bw + 12, r.y + 21, t, theme.text);
+}
 
 
 static rect_t tb_rect(void) { return R(0, SH - TB_H, SW, TB_H); }
@@ -559,6 +593,17 @@ static void draw_taskbar(surface_t *s, rect_t clip)
     tray_kbd_r = R(x - 36, tr.y + 10, 32, TB_H - 20);
     x -= 36;
     gfx_text_center(s, font_ui_md, tray_kbd_r, kl, theme.text);
+
+    if (audio_available()) {
+        tray_snd_r = R(x - 32, tr.y + 10, 28, TB_H - 20);
+        x -= 32;
+        icon_draw(s, ICON_SOUND, tray_snd_r.x + 4, tray_snd_r.y + 6, 20);
+        if (audio_muted())
+            gfx_line_w(s, (float)tray_snd_r.x + 5, (float)tray_snd_r.y + 26, (float)tray_snd_r.x + 23,
+                       (float)tray_snd_r.y + 8, 2.2f, theme.danger);
+    } else {
+        tray_snd_r = R(0, 0, 0, 0);
+    }
 
     tray_net_r = R(x - 32, tr.y + 10, 28, TB_H - 20);
     x -= 32;
@@ -853,6 +898,7 @@ static rect_t toast_rect(int i, uint64_t now)
 
 void desktop_notify(const char *title, const char *body, int icon)
 {
+    audio_sound(SND_NOTIFY);
     if (ntoasts == 4) {
         memmove(&toasts[0], &toasts[1], sizeof(toasts[0]) * 3);
         ntoasts--;
@@ -1004,6 +1050,7 @@ void desktop_draw_overlay(surface_t *s, rect_t clip)
     draw_ctx(s, clip);
     draw_alt_tab(s, clip);
     draw_toasts(s, clip);
+    draw_osd(s, clip);
     draw_tooltip(s, clip);
 }
 
@@ -1018,7 +1065,13 @@ static void power_action(int which)
 bool desktop_mouse_overlay(int x, int y, int buttons, int pressed, int released, int wheel)
 {
     UNUSED(buttons);
-    UNUSED(wheel);
+    if (wheel && rect_has(tray_snd_r, x, y)) {
+        audio_set_muted(false);
+        audio_set_volume(audio_volume() + wheel * 5);
+        audio_sound(SND_POP);
+        osd_show();
+        return true;
+    }
     /* notifications: click to dismiss */
     uint64_t now = uptime_ms();
     for (int i = 0; i < ntoasts; i++) {
@@ -1114,6 +1167,9 @@ bool desktop_mouse_overlay(int x, int y, int buttons, int pressed, int released,
             wm_dirty(tr);
         } else if (rect_has(tray_net_r, x, y)) {
             app_launch("netinfo");
+        } else if (rect_has(tray_snd_r, x, y)) {
+            audio_set_muted(!audio_muted());
+            osd_show();
         }
     }
     if ((pressed & BTN_MIDDLE) && tb_hover >= 0 && tb[tb_hover].app) app_launch(tb[tb_hover].app->id);
@@ -1216,6 +1272,10 @@ bool desktop_tick(uint64_t now)
     }
     bool anim = false;
     update_clock();
+    if (osd_until && now > osd_until) {
+        osd_until = 0;
+        wm_dirty(osd_rect());
+    }
 
     if (now - last_cpu_sample >= 500) {
         last_cpu_sample = now;

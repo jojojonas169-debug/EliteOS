@@ -11,6 +11,7 @@
 #include <parallel.h>
 #include <net.h>
 #include <block.h>
+#include <audio.h>
 
 #define HIST 64
 #define MAXARGS 32
@@ -605,6 +606,45 @@ static int c_sync(struct shell *sh, int argc, char **argv)
     return 0;
 }
 
+static int c_play(struct shell *sh, int argc, char **argv)
+{
+    if (!audio_available()) { err(sh, "play", "no sound card (ZenithOS supports Intel HD Audio)"); return 1; }
+    if (argc < 2) { err(sh, "play", "usage: play <file.wav> | play startup|notify|error|success"); return 1; }
+    static const char *names[] = { "startup", "notify", "error", "click", "success", "shutdown", "pop" };
+    for (unsigned i = 0; i < ARRAY_SIZE(names); i++)
+        if (!strcmp(argv[1], names[i])) { audio_sound((int)i); return 0; }
+    char p[VFS_PATH_MAX];
+    resolve(sh, argv[1], p);
+    size_t n;
+    char *d = vfs_read_file(p, &n);
+    if (!d) { err(sh, "play", errstr(E_NOENT)); return 1; }
+    int r = audio_play_wav(d, n);
+    kfree(d);
+    if (r) { err(sh, "play", "not a PCM WAV file (8/16-bit, mono/stereo)"); return 1; }
+    return 0;
+}
+
+static int c_beep(struct shell *sh, int argc, char **argv)
+{
+    if (!audio_available()) { err(sh, "beep", "no sound card"); return 1; }
+    float f = argc > 1 ? (float)strtol(argv[1], NULL, 10) : 880.0f;
+    int ms = argc > 2 ? (int)strtol(argv[2], NULL, 10) : 200;
+    audio_note_on(CLAMP(f, 20.0f, 20000.0f), WAVE_SINE, 0.6f, CLAMP(ms, 1, 10000));
+    return 0;
+}
+
+static int c_volume(struct shell *sh, int argc, char **argv)
+{
+    if (argc > 1) {
+        if (!strcmp(argv[1], "mute")) audio_set_muted(true);
+        else if (!strcmp(argv[1], "unmute")) audio_set_muted(false);
+        else audio_set_volume((int)strtol(argv[1], NULL, 10));
+    }
+    pr(sh, "volume %d%%%s  ·  %s\n", audio_volume(), audio_muted() ? " (muted)" : "",
+       audio_available() ? hda_name() : "no sound card");
+    return 0;
+}
+
 static int c_umount(struct shell *sh, int argc, char **argv)
 {
     if (argc < 2) { err(sh, "umount", "usage: umount <mount point>"); return 1; }
@@ -1044,6 +1084,9 @@ static const struct cmd commands[] = {
     { "sync", c_sync, "write cached changes to disk" },
     { "mkfs", c_mkfs, "format a disk or partition (FAT32)" },
     { "umount", c_umount, "unmount a disk" },
+    { "play", c_play, "play a WAV file or a system sound" },
+    { "beep", c_beep, "play a tone: beep [Hz] [ms]" },
+    { "volume", c_volume, "show or set the volume (0-100, mute)" },
     { "install", c_install, "install ZenithOS to a disk" },
     { "ps", c_ps, "list threads and processes" },
     { "kill", c_kill, "terminate a process" },

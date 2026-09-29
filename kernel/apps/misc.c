@@ -5,6 +5,7 @@
 #include <vfs.h>
 #include <cpu.h>
 #include <net.h>
+#include <audio.h>
 #include "../wm/wm_internal.h"
 
 surface_t *bmp_load(const char *path);
@@ -306,10 +307,10 @@ static void settings_paint(app_t *a, surface_t *s)
     gfx_fill(s, sbw, 0, 1, H, ALPHA(0xFFFFFF, 12));
     static const struct { const char *n; int icon; } pages[] = {
         { "Personalization", ICON_PAINT }, { "Keyboard", ICON_TEXT }, { "Date & time", ICON_CLOCK },
-        { "Network", ICON_NETWORK }, { "System", ICON_INFO },
+        { "Network", ICON_NETWORK }, { "Sound", ICON_SOUND }, { "System", ICON_INFO },
     };
     gfx_text(s, font_title, 20, 18, "Settings", theme.text);
-    for (int i = 0; i < 5; i++) {
+    for (int i = 0; i < (int)ARRAY_SIZE(pages); i++) {
         rect_t r = R(10, 62 + i * 42, sbw - 20, 38);
         if (ui_list_item(u, r, st->page == i)) st->page = i;
         icon_draw(s, pages[i].icon, r.x + 10, r.y + 8, 22);
@@ -431,6 +432,33 @@ static void settings_paint(app_t *a, surface_t *s)
         break;
     }
     case 4: {
+        section(s, x, y, "Sound", audio_available() ? hda_name() : "No sound card found (ZenithOS drives Intel HD Audio)");
+        y += 74;
+        if (!audio_available()) break;
+        gfx_text(s, font_ui_md, x, y + 8, "Volume", theme.text);
+        float v = (float)audio_volume();
+        if (ui_slider(u, R(x + 120, y + 6, 300, 24), &v, 0, 100)) audio_set_volume((int)(v + 0.5f));
+        char b[16];
+        snprintf(b, sizeof(b), "%d%%", audio_volume());
+        gfx_text(s, font_ui_md, x + 440, y + 8, b, theme.text_dim);
+        y += 48;
+        bool m = audio_muted();
+        gfx_text(s, font_ui_md, x, y + 8, "Mute", theme.text);
+        if (ui_toggle(u, R(x + 360, y, 60, 36), &m)) audio_set_muted(m);
+        y += 60;
+        gfx_text(s, font_ui_bold, x, y, "Try it", theme.text);
+        y += 28;
+        static const struct { const char *n; int snd; } tests[] = {
+            { "Startup", SND_STARTUP }, { "Notification", SND_NOTIFY }, { "Success", SND_SUCCESS }, { "Error", SND_ERROR },
+        };
+        for (int i = 0; i < 4; i++)
+            if (ui_button(u, R(x + i * 128, y, 120, 36), tests[i].n, BTN_NORMAL)) audio_sound(tests[i].snd);
+        y += 56;
+        if (ui_button(u, R(x, y, 200, 38), "Open Piano", BTN_PRIMARY)) app_launch("piano");
+        u->want_repaint = u->want_repaint || audio_level() > 0.01f;
+        break;
+    }
+    case 5: {
         section(s, x, y, "System", NULL);
         y += 50;
         char b[96];
