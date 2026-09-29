@@ -4,7 +4,7 @@
 
 **A 64-bit operating system written from scratch — with a compositing desktop that uses every CPU core.**
 
-Own UEFI bootloader · own SMP kernel · own drivers · own FAT32 · own TCP/IP stack · own sound system · own web browser · own window system · 24 apps · installs itself to disk
+Own UEFI bootloader · own SMP kernel · own drivers · own FAT32 · own TCP/IP stack · own TLS 1.3 · own sound system · own web browser · own window system · 24 apps · installs itself to disk
 
 ![ZenithOS desktop](docs/showcase.png)
 
@@ -32,8 +32,15 @@ Some highlights:
 - **Protected user programs.** Programs in `/bin` are ELF executables that run
   in ring 3 in their own address space and talk to the kernel through system
   calls. A crashing program is terminated; the system keeps running.
-- **Networking.** An Intel e1000 driver plus a small TCP/IP stack: DHCP, ARP,
-  ICMP ping, DNS and HTTP downloads with `wget`.
+- **Networking.** An Intel e1000 driver plus its own TCP/IP stack: DHCP, ARP,
+  ICMP ping, DNS, and TCP with many parallel connections, retransmission and
+  flow control. HTTP/1.1 with chunked transfers and gzip; `wget` and `curl`.
+- **Real HTTPS.** A TLS 1.3 client written from scratch (RFC 8446) with its
+  own cryptography: AES-GCM, ChaCha20-Poly1305, SHA-2, HKDF, X25519,
+  P-256/P-384 ECDH and ECDSA, RSA-PSS/PKCS#1. Server certificates are
+  checked all the way to Mozilla's root certificates (built in), including
+  host names, validity dates and CA constraints — a certificate from an
+  untrusted authority is refused, not waved through.
 - **A web browser.** *Zenith Web* has its own HTML parser and layout engine
   (headings, paragraphs, lists, links, preformatted text, entities, images),
   follows redirects, keeps a history and also opens local `file://` pages and
@@ -74,6 +81,8 @@ Some highlights:
 | Chess engine searching on four cores | Piano: synthesizer with oscilloscope |
 | ![Installer](docs/installer.png) | ![Pictures in Zenith Web](docs/pictures.png) |
 | Install ZenithOS onto a disk | JPEG and PNG pictures loaded over HTTP |
+| ![HTTPS in Zenith Web](docs/https.png) | ![TLS in the terminal](docs/tls-terminal.png) |
+| An HTTPS page with pictures (TLS 1.3, padlock) | `wget` over TLS 1.3; untrusted and mismatched certificates refused |
 
 ## Trying it
 
@@ -152,7 +161,7 @@ completion, `>`/`>>` redirection and about 65 built-in commands, for example
 ls -l   cd   cat   grep   tree   hexdump   cp   mv   rm -r   edit
 ps   kill   free   df   uptime   lscpu   lspci   dmesg   neofetch
 lsblk   mount   umount   sync   mkfs   install   play   beep   volume
-ifconfig   dhcp   ping   nslookup   wget   calc   bench   cal   matrix
+ifconfig   dhcp   ping   nslookup   wget   curl   sha256sum   calc   bench
 ```
 
 `open` starts apps, files and web pages (`open http://example.com`).
@@ -194,7 +203,10 @@ kernel/
   dev/       ACPI, local APIC + I/O APIC, timers, RTC, PS/2 + vmmouse, xHCI USB + HID,
              AHCI SATA, block devices + GPT/MBR, HD Audio + mixer/synth, PCI, serial, power
   fs/        VFS with mount points, RAM file system, tar initrd loader, FAT32, tty
-  net/       e1000 driver, Ethernet/ARP/IPv4/ICMP/UDP/TCP, DHCP, DNS, HTTP
+  net/       e1000 driver, Ethernet/ARP/IPv4/ICMP/UDP, TCP, DHCP, DNS, HTTP/1.1,
+             TLS 1.3, X.509 and the root certificate store
+  crypto/    SHA-2, HMAC/HKDF, AES-GCM, ChaCha20-Poly1305, X25519, P-256/P-384, RSA,
+             random numbers
   gfx/       2D graphics (anti-aliased shapes, gradients, blur, shadows), font renderer
   wm/        compositing window manager, desktop shell, widgets, vector icons
   apps/      the built-in applications, including the Zenith Web browser
@@ -206,6 +218,9 @@ About 27 000 lines of C, assembly and Python.
 
 `tools/qemu-test.py` boots the system headless, types, clicks and takes
 screenshots through QMP — that is how the pictures above were made.
+`make test` builds the cryptography, certificate and TLS building blocks for
+the host and checks them against RFC/NIST test vectors, keys and signatures
+made by OpenSSL, all 146 Mozilla roots and a test PKI.
 
 ## Status
 
@@ -214,9 +229,9 @@ Version 1.0 "Aurora". It boots, it is fun, and it is honest about its limits:
 - Only `/disk` (FAT32 on SATA) is persistent; the rest of the tree lives in
   RAM. No NVMe or USB storage yet, and no ext4/NTFS.
 - USB covers keyboards, mice and tablets (no USB 3 hubs).
-- Networking supports Intel e1000-family cards and plain HTTP (no TLS). Zenith
-  Web renders HTML structure and pictures (PNG, baseline JPEG) — no CSS or
-  JavaScript.
+- TLS 1.3 only: servers that still speak nothing newer than TLS 1.2 cannot
+  be reached. No IPv6 yet. Zenith Web renders HTML structure and pictures
+  (PNG, baseline JPEG) — no CSS or JavaScript.
 - Sound needs an Intel HD Audio controller; there is no audio input.
 
 ## Credits
@@ -227,3 +242,5 @@ ZenithOS replaces the earlier EliteOS project in this repository.
 Fonts: [Roboto](https://github.com/googlefonts/roboto) (Apache License 2.0) and
 [DejaVu Sans / Sans Mono](https://dejavu-fonts.github.io/) (Bitstream Vera license;
 the chess pieces come from DejaVu Sans), see `assets/fonts/`.
+Root certificates: Mozilla's CA list from the `ca-certificates` package
+(`assets/certs/ca-bundle.pem`, MPL 2.0).

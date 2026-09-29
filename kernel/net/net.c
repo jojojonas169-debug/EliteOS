@@ -1,6 +1,6 @@
 /*
- * A small TCP/IP stack: Ethernet, ARP, IPv4, ICMP echo, UDP, DHCP client,
- * DNS resolver and a minimal TCP client (enough for HTTP/1.0 GET).
+ * The TCP/IP stack's lower half: Ethernet, ARP, IPv4, ICMP echo, UDP,
+ * DHCP client and DNS resolver. TCP lives in tcp.c, HTTP(S) in http.c.
  * A single network thread polls the NIC and handles incoming frames.
  */
 #include <kernel.h>
@@ -83,7 +83,7 @@ bool str_to_ip(const char *s, uint32_t *ip)
     return true;
 }
 
-static uint16_t csum(const void *data, size_t len, uint32_t sum)
+uint16_t net_csum(const void *data, size_t len, uint32_t sum)
 {
     const uint8_t *p = data;
     for (size_t i = 0; i + 1 < len; i += 2) sum += (uint32_t)(p[i] << 8 | p[i + 1]);
@@ -163,6 +163,12 @@ static bool arp_resolve(uint32_t ip, uint8_t *mac, int timeout_ms)
     if (ip == 0xFFFFFFFF) { memcpy(mac, bcast, 6); return true; }
     /* off-link destinations go through the gateway */
     if (info.netmask && (ip & info.netmask) != (info.ip & info.netmask)) ip = info.gateway;
+    if (arp_lookup(ip, mac)) return true;
+    if (!timeout_ms) {
+        /* callers that must not sleep: ask, and let a retransmission find the answer */
+        arp_send(1, (const uint8_t *)"\0\0\0\0\0\0", ip);
+        return false;
+    }
     uint64_t end = uptime_ms() + (uint64_t)timeout_ms;
     while (uptime_ms() < end) {
         if (arp_lookup(ip, mac)) return true;
@@ -178,10 +184,10 @@ static bool arp_resolve(uint32_t ip, uint8_t *mac, int timeout_ms)
 
 static uint16_t ip_id = 1;
 
-static bool ip_send(uint32_t dst, uint8_t proto, const void *payload, size_t len)
+static bool ip_send_ex(uint32_t dst, uint8_t proto, const void *payload, size_t len, int arp_ms)
 {
     uint8_t mac[6];
-    if (!arp_resolve(dst, mac, 1500)) return false;
+    if (!nd || !arp_resolve(dst, mac, arp_ms)) return false;
     uint8_t pkt[1500];
     if (len + sizeof(struct ip4) > sizeof(pkt)) return false;
     struct ip4 *h = (struct ip4 *)pkt;
@@ -195,10 +201,29 @@ static bool ip_send(uint32_t dst, uint8_t proto, const void *payload, size_t len
     h->csum = 0;
     h->src = htonl(info.ip);
     h->dst = htonl(dst);
-    h->csum = csum(h, sizeof(*h), 0);
+    h->csum = net_csum(h, sizeof(*h), 0);
     memcpy(pkt + sizeof(*h), payload, len);
     return eth_send(mac, ETH_IP, pkt, sizeof(*h) + len);
 }
+
+static bool ip_send(uint32_t dst, uint8_t proto, const void *payload, size_t len)
+{
+    return ip_send_ex(dst, proto, payload, len, 1500);
+}
+
+/* never sleeps (TCP calls it with its lock held) */
+bool net_ip_send(uint32_t dst, uint8_t proto, const void *payload, size_t len)
+{
+    return ip_send_ex(dst, proto, payload, len, 0);
+}
+
+bool net_route_ready(uint32_t dst, int timeout_ms)
+{
+    uint8_t mac[6];
+    return nd && arp_resolve(dst, mac, timeout_ms);
+}
+
+uint32_t net_local_ip(void) { return nd ? info.ip : 0; }
 
 /* ------------------------------------------------------------------------
  * ICMP
@@ -215,7 +240,7 @@ static void icmp_input(uint32_t src, uint8_t *data, size_t len)
     if (ic->type == 8) {                     /* echo request -> reply */
         ic->type = 0;
         ic->csum = 0;
-        ic->csum = csum(data, len, 0);
+        ic->csum = net_csum(data, len, 0);
         ip_send(src, 1, data, len);
     } else if (ic->type == 0 && ntohs(ic->id) == 0x5A4E && ntohs(ic->seq) == ping_wait_seq) {
         ping_got = true;
@@ -234,7 +259,7 @@ int net_ping(uint32_t ip, uint16_t seq, int timeout_ms)
     ic->seq = htons(seq);
     for (int i = 0; i < 32; i++) buf[sizeof(*ic) + i] = (uint8_t)('a' + i % 26);
     ic->csum = 0;
-    ic->csum = csum(buf, sizeof(buf), 0);
+    ic->csum = net_csum(buf, sizeof(buf), 0);
     ping_wait_seq = seq;
     ping_got = false;
     uint64_t t0 = uptime_ms();
@@ -481,194 +506,6 @@ bool net_resolve(const char *host, uint32_t *ip, int timeout_ms)
 }
 
 /* ------------------------------------------------------------------------
- * TCP: one active client connection at a time
- * ---------------------------------------------------------------------- */
-
-enum { TCP_CLOSED, TCP_SYN_SENT, TCP_ESTABLISHED, TCP_FIN_WAIT, TCP_DONE };
-
-static struct {
-    int state;
-    uint32_t rip;
-    uint16_t lport, rport;
-    uint32_t snd_nxt, rcv_nxt;
-    uint8_t *rx;
-    size_t rx_len, rx_cap;
-    bool rst;
-} tc;
-static char tcp_chan;
-static mutex_t tcp_mtx = MUTEX_INIT("tcp");
-
-static bool tcp_send_seg(uint8_t flags, const void *data, size_t len)
-{
-    uint8_t pkt[1460 + sizeof(struct tcp)];
-    struct tcp *t = (struct tcp *)pkt;
-    t->sport = htons(tc.lport);
-    t->dport = htons(tc.rport);
-    t->seq = htonl(tc.snd_nxt);
-    t->ack = htonl(tc.rcv_nxt);
-    t->off = (sizeof(struct tcp) / 4) << 4;
-    t->flags = flags;
-    t->win = htons(32768);
-    t->csum = 0;
-    t->urg = 0;
-    memcpy(pkt + sizeof(*t), data, len);
-    /* pseudo header checksum */
-    uint32_t sum = 0;
-    uint32_t s = info.ip, d = tc.rip;
-    sum += (s >> 16) + (s & 0xFFFF) + (d >> 16) + (d & 0xFFFF);
-    sum += 6 + (uint32_t)(sizeof(*t) + len);
-    t->csum = csum(pkt, sizeof(*t) + len, sum);
-    return ip_send(tc.rip, 6, pkt, sizeof(*t) + len);
-}
-
-static void tcp_input(uint32_t src, uint8_t *data, size_t len)
-{
-    if (len < sizeof(struct tcp)) return;
-    struct tcp *t = (struct tcp *)data;
-    if (tc.state == TCP_CLOSED || src != tc.rip || ntohs(t->dport) != tc.lport || ntohs(t->sport) != tc.rport) return;
-    size_t hl = (size_t)(t->off >> 4) * 4;
-    if (hl > len) return;
-    uint8_t *payload = data + hl;
-    size_t plen = len - hl;
-    uint32_t seq = ntohl(t->seq);
-    if (t->flags & TCP_RST) { tc.rst = true; tc.state = TCP_DONE; sched_wake(&tcp_chan); return; }
-    if (tc.state == TCP_SYN_SENT) {
-        if ((t->flags & (TCP_SYN | TCP_ACK)) == (TCP_SYN | TCP_ACK)) {
-            tc.rcv_nxt = seq + 1;
-            tc.snd_nxt = ntohl(t->ack);
-            tc.state = TCP_ESTABLISHED;
-            tcp_send_seg(TCP_ACK, NULL, 0);
-            sched_wake(&tcp_chan);
-        }
-        return;
-    }
-    if (plen && seq == tc.rcv_nxt) {
-        if (tc.rx_len + plen > tc.rx_cap) {
-            size_t cap = MAX(tc.rx_cap * 2, tc.rx_len + plen + 4096);
-            if (cap > MiB(8)) cap = MiB(8);
-            uint8_t *n = krealloc(tc.rx, cap);
-            if (n) { tc.rx = n; tc.rx_cap = cap; }
-        }
-        if (tc.rx_len + plen <= tc.rx_cap) {
-            memcpy(tc.rx + tc.rx_len, payload, plen);
-            tc.rx_len += plen;
-        }
-        tc.rcv_nxt += (uint32_t)plen;
-    }
-    if (t->flags & TCP_FIN && seq + plen == tc.rcv_nxt) {
-        tc.rcv_nxt++;
-        tc.state = TCP_DONE;
-    }
-    if (plen || (t->flags & TCP_FIN)) tcp_send_seg(TCP_ACK, NULL, 0);
-    sched_wake(&tcp_chan);
-}
-
-static void split_url(const char *url, char *host, size_t hn, uint16_t *port, char *path, size_t pn)
-{
-    if (!strncmp(url, "http://", 7)) url += 7;
-    const char *slash = strchr(url, '/');
-    size_t hl = slash ? (size_t)(slash - url) : strlen(url);
-    char hp[128];
-    strlcpy(hp, url, MIN(hl + 1, sizeof(hp)));
-    char *colon = strchr(hp, ':');
-    *port = 80;
-    if (colon) { *colon = 0; *port = (uint16_t)atoi(colon + 1); }
-    strlcpy(host, hp, hn);
-    strlcpy(path, slash ? slash : "/", pn);
-}
-
-/* find a header value (case-insensitive name) in a raw response */
-static bool header_value(const uint8_t *rx, size_t hdr_end, const char *name, char *out, size_t n)
-{
-    size_t nl = strlen(name);
-    for (size_t i = 0; i + nl + 1 < hdr_end; i++) {
-        if ((i == 0 || rx[i - 1] == '\n') && !strncasecmp((const char *)rx + i, name, nl) && rx[i + nl] == ':') {
-            size_t j = i + nl + 1, k = 0;
-            while (j < hdr_end && rx[j] == ' ') j++;
-            while (j < hdr_end && rx[j] != '\r' && rx[j] != '\n' && k + 1 < n) out[k++] = (char)rx[j++];
-            out[k] = 0;
-            return true;
-        }
-    }
-    return false;
-}
-
-static size_t find_header_end(void)
-{
-    for (size_t i = 0; i + 3 < tc.rx_len; i++)
-        if (!memcmp(tc.rx + i, "\r\n\r\n", 4)) return i + 4;
-    return 0;
-}
-
-int net_http_get_ex(const char *url, char **body, size_t *blen, char *location, size_t locn, int timeout_ms)
-{
-    if (location && locn) location[0] = 0;
-    if (!nd || !info.ip) return -1;
-    char host[128], path[512];
-    uint16_t port;
-    split_url(url, host, sizeof(host), &port, path, sizeof(path));
-    uint32_t ip;
-    if (!net_resolve(host, &ip, 3000)) return -1;
-
-    mutex_lock(&tcp_mtx);
-    memset(&tc, 0, sizeof(tc));
-    tc.rip = ip;
-    tc.rport = port;
-    tc.lport = (uint16_t)(49152 + (rdtsc() & 0x3FFF));
-    tc.snd_nxt = (uint32_t)rdtsc();
-    tc.state = TCP_SYN_SENT;
-    uint64_t deadline = uptime_ms() + (uint64_t)timeout_ms;
-    int status = -1;
-    for (int tries = 0; tries < 3 && tc.state == TCP_SYN_SENT; tries++) {
-        tcp_send_seg(TCP_SYN, NULL, 0);
-        uint64_t t = uptime_ms() + 1000;
-        while (tc.state == TCP_SYN_SENT && uptime_ms() < t) sched_wait(&tcp_chan, NULL, 50);
-    }
-    if (tc.state == TCP_ESTABLISHED) {
-        char req[768];
-        int n = snprintf(req, sizeof(req),
-                         "GET %s HTTP/1.0\r\nHost: %s\r\nUser-Agent: ZenithOS/" ZENITH_VERSION
-                         "\r\nAccept: text/html, text/plain, */*\r\nConnection: close\r\n\r\n",
-                         path, host);
-        tcp_send_seg(TCP_PSH | TCP_ACK, req, (size_t)n);
-        tc.snd_nxt += (uint32_t)n;
-        size_t want = 0, hdr_end = 0;
-        while (tc.state != TCP_DONE && uptime_ms() < deadline) {
-            sched_wait(&tcp_chan, NULL, 50);
-            if (!hdr_end && (hdr_end = find_header_end())) {
-                char cl[24];
-                if (header_value(tc.rx, hdr_end, "Content-Length", cl, sizeof(cl))) want = (size_t)atoi(cl);
-            }
-            if (hdr_end && want && tc.rx_len >= hdr_end + want) break;
-        }
-        tcp_send_seg(TCP_FIN | TCP_ACK, NULL, 0);
-        /* parse the response */
-        if (tc.rx_len > 12 && !memcmp(tc.rx, "HTTP/", 5)) {
-            status = atoi((char *)tc.rx + 9);
-            if (!hdr_end) hdr_end = find_header_end();
-            if (!hdr_end) hdr_end = tc.rx_len;
-            if (location && locn) header_value(tc.rx, hdr_end, "Location", location, locn);
-            size_t bl = tc.rx_len - hdr_end;
-            char *b = kmalloc(bl + 1);
-            memcpy(b, tc.rx + hdr_end, bl);
-            b[bl] = 0;
-            *body = b;
-            *blen = bl;
-        }
-    }
-    kfree(tc.rx);
-    tc.rx = NULL;
-    tc.state = TCP_CLOSED;
-    mutex_unlock(&tcp_mtx);
-    return status;
-}
-
-int net_http_get(const char *url, char **body, size_t *blen, int timeout_ms)
-{
-    return net_http_get_ex(url, body, blen, NULL, 0, timeout_ms);
-}
-
-/* ------------------------------------------------------------------------
  * receive path
  * ---------------------------------------------------------------------- */
 
@@ -716,6 +553,7 @@ static int net_thread(void *arg)
             last_rx_t = uptime_ms();
         }
         info.link = nd->link(nd);
+        tcp_timer();
         /* poll fast while traffic is flowing, relax when idle */
         sched_sleep(uptime_ms() - last_rx_t < 2000 ? 1 : 10);
     }

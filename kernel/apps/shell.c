@@ -12,6 +12,7 @@
 #include <net.h>
 #include <block.h>
 #include <audio.h>
+#include <crypto.h>
 
 #define HIST 64
 #define MAXARGS 32
@@ -645,6 +646,25 @@ static int c_volume(struct shell *sh, int argc, char **argv)
     return 0;
 }
 
+static int c_sha256sum(struct shell *sh, int argc, char **argv)
+{
+    if (argc < 2) { err(sh, "sha256sum", "usage: sha256sum <file>..."); return 1; }
+    for (int i = 1; i < argc; i++) {
+        char p[VFS_PATH_MAX];
+        resolve(sh, argv[i], p);
+        size_t n;
+        char *d = vfs_read_file(p, &n);
+        if (!d) { err(sh, argv[i], errstr(E_NOENT)); continue; }
+        uint8_t h[32];
+        sha256(d, n, h);
+        kfree(d);
+        char hex[65];
+        for (int k = 0; k < 32; k++) snprintf(hex + 2 * k, 3, "%02x", h[k]);
+        pr(sh, "%s  %s\n", hex, argv[i]);
+    }
+    return 0;
+}
+
 static int c_umount(struct shell *sh, int argc, char **argv)
 {
     if (argc < 2) { err(sh, "umount", "usage: umount <mount point>"); return 1; }
@@ -1084,6 +1104,7 @@ static const struct cmd commands[] = {
     { "sync", c_sync, "write cached changes to disk" },
     { "mkfs", c_mkfs, "format a disk or partition (FAT32)" },
     { "umount", c_umount, "unmount a disk" },
+    { "sha256sum", c_sha256sum, "SHA-256 checksum of files" },
     { "play", c_play, "play a WAV file or a system sound" },
     { "beep", c_beep, "play a tone: beep [Hz] [ms]" },
     { "volume", c_volume, "show or set the volume (0-100, mute)" },
@@ -1112,7 +1133,8 @@ static const struct cmd commands[] = {
     { "dhcp", c_net, "request an IP address" },
     { "ping", c_net, "ping a host" },
     { "nslookup", c_net, "resolve a host name" },
-    { "wget", c_net, "download a web page over HTTP" },
+    { "wget", c_net, "download a file over HTTP or HTTPS" },
+    { "curl", c_net, "print a web page (HTTP or HTTPS)" },
     { "reboot", c_reboot, "restart the computer" },
     { "shutdown", c_reboot, "power off" },
     { "exit", c_exit, "close the shell" },
@@ -1204,19 +1226,52 @@ static int c_net(struct shell *sh, int argc, char **argv)
         pr(sh, "%d packets sent, %d received\n", count, ok);
         return ok ? 0 : 1;
     }
-    if (!strcmp(argv[0], "wget")) {
-        char *body;
-        size_t len;
-        int status = net_http_get(argv[1], &body, &len, 8000);
-        if (status < 0) { err(sh, "wget", "request failed"); return 1; }
-        pr(sh, "HTTP %d, %lu bytes\n", status, len);
-        const char *name = argc > 2 ? argv[2] : "index.html";
-        char p[VFS_PATH_MAX];
-        resolve(sh, name, p);
-        vfs_write_file(p, body, len);
-        pr(sh, "saved to %s\n", p);
-        kfree(body);
-        return 0;
+    if (!strcmp(argv[0], "wget") || !strcmp(argv[0], "curl")) {
+        bool save = !strcmp(argv[0], "wget");
+        char url[512];
+        strlcpy(url, argv[1], sizeof(url));
+        if (!strstr(url, "://")) snprintf(url, sizeof(url), "http://%s", argv[1]);
+        struct http_result *r = kmalloc(sizeof(*r));
+        int status = -1;
+        for (int hop = 0; hop < 5; hop++) {
+            status = net_http_request(url, r, 15000);
+            if (status >= 300 && status < 400 && r->location[0]) {
+                char next[512];
+                if (strstr(r->location, "://")) strlcpy(next, r->location, sizeof(next));
+                else {
+                    /* relative redirect: keep scheme and host */
+                    const char *h = strstr(url, "://");
+                    const char *slash = h ? strchr(h + 3, '/') : NULL;
+                    size_t keep = slash ? (size_t)(slash - url) : strlen(url);
+                    snprintf(next, sizeof(next), "%.*s%s%s", (int)keep, url, r->location[0] == '/' ? "" : "/", r->location);
+                }
+                if (save) pr(sh, C_DIM "HTTP %d -> %s" C_RESET "\n", status, next);
+                kfree(r->body);
+                strlcpy(url, next, sizeof(url));
+                continue;
+            }
+            break;
+        }
+        if (status < 0) {
+            err(sh, argv[0], r->error[0] ? r->error : "request failed");
+            kfree(r);
+            return 1;
+        }
+        if (save) {
+            if (r->tls[0]) pr(sh, C_GREEN "secure connection:" C_RESET " %s\n", r->tls);
+            pr(sh, "HTTP %d, %lu bytes%s%s\n", status, r->len, r->content_type[0] ? ", " : "", r->content_type);
+            const char *name = argc > 2 ? argv[2] : "index.html";
+            char p[VFS_PATH_MAX];
+            resolve(sh, name, p);
+            vfs_write_file(p, r->body, r->len);
+            pr(sh, "saved to %s\n", p);
+        } else {
+            out(sh, r->body, MIN(r->len, (size_t)200000));
+            if (r->len && r->body[r->len - 1] != '\n') out(sh, "\n", 1);
+        }
+        kfree(r->body);
+        kfree(r);
+        return status >= 400;
     }
     return 1;
 }

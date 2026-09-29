@@ -51,6 +51,7 @@ $(BUILD)/kernel/%.S.o: kernel/%.S
 	@$(CC) $(KAFLAGS) -c $< -o $@
 
 $(BUILD)/kernel/gfx/fonts.S.o: $(wildcard assets/fonts/*.zft)
+$(BUILD)/kernel/net/certs.S.o: assets/certs/ca-bundle.pem
 
 # two-pass link: the second pass embeds the symbol table for stack traces
 $(BUILD)/ksyms0.c: tools/gensyms.py
@@ -153,7 +154,7 @@ $(BUILD)/zenithos.iso: $(BUILD)/efiboot.img
 	  --efi-boot efiboot.img -efi-boot-part --efi-boot-image --protective-msdos-label \
 	  -o $@ $(BUILD)/iso 2>/dev/null
 
-.PHONY: all iso kernel disk run run-fast run-headless run-usb run-disk clean FORCE
+.PHONY: all iso kernel disk test run run-fast run-headless run-usb run-disk clean FORCE
 .DEFAULT_GOAL := all
 
 all: $(BUILD)/zenithos.iso
@@ -197,6 +198,10 @@ run-usb: $(BUILD)/zenithos.iso $(BUILD)/ovmf_vars.fd $(BUILD)/disk.img
 	$(QEMU) $(QEMU_COMMON) -cdrom $(BUILD)/zenithos.iso -device qemu-xhci,id=xhci \
 	  -device usb-hub,bus=xhci.0,port=1,id=hub -device usb-kbd,bus=xhci.0,port=1.1 \
 	  -device usb-tablet,bus=xhci.0,port=2
+
+# host-side unit tests of the crypto, certificate and TLS building blocks
+test:
+	@$(MAKE) --no-print-directory -C tests/host
 
 clean:
 	rm -rf $(BUILD)

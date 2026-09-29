@@ -82,6 +82,8 @@ struct browser {
     size_t pending_len;
     char pending_url[512];
     bool pending_plain;
+    char pending_tls[96];
+    char tls[96];                   /* security of the page on screen, "" = not encrypted */
     app_t *app;
     volatile bool closed;
     /* images load in the background; a new page bumps the generation */
@@ -637,13 +639,15 @@ static void layout(struct page *p, int width)
 static const char *home_html =
     "<html><head><title>Zenith Web</title></head><body>"
     "<h1>Zenith Web</h1>"
-    "<p>A tiny web browser running on the ZenithOS TCP/IP stack. It speaks plain <b>HTTP</b> "
-    "(there is no TLS yet), so pick sites that still serve <code>http://</code>.</p>"
+    "<p>A web browser running on the ZenithOS TCP/IP stack. It speaks <b>HTTP</b> and <b>HTTPS</b> "
+    "(TLS 1.3 with certificate checks against Mozilla's root certificates).</p>"
     "<h2>Places to try</h2><ul>"
+    "<li><a href=\"https://html.duckduckgo.com/html/\">DuckDuckGo</a> - search the web (the address bar searches here too)</li>"
+    "<li><a href=\"https://en.wikipedia.org/wiki/Special:Random\">A random Wikipedia article</a></li>"
     "<li><a href=\"http://frogfind.com/\">FrogFind</a> - a search engine that turns the modern web into simple HTML</li>"
     "<li><a href=\"http://68k.news/\">68k.news</a> - headlines for vintage computers</li>"
     "<li><a href=\"http://info.cern.ch/hypertext/WWW/TheProject.html\">The first web page</a> (CERN, 1991)</li>"
-    "<li><a href=\"http://example.com/\">example.com</a></li>"
+    "<li><a href=\"https://example.com/\">example.com</a> (HTTPS)</li>"
     "<li><a href=\"http://neverssl.com/\">neverssl.com</a></li>"
     "<li><a href=\"http://10.0.2.2:8000/\">http://10.0.2.2:8000/</a> - a server on the QEMU host</li>"
     "<li><a href=\"file:///home/user/Documents/zenith.html\">ZenithOS Handbook</a> - a local page, no network needed</li>"
@@ -680,51 +684,53 @@ static int fetch_thread(void *arg)
         notify_ui(b);
         net_dhcp(3000);
     }
-    for (int redirects = 0; redirects < 5; redirects++) {
-        if (!strncasecmp(url, "https://", 8)) {
-            char msg[700];
-            snprintf(msg, sizeof(msg),
-                     "<h1>Secure sites are not supported yet</h1><p>ZenithOS does not speak TLS, so it cannot open "
-                     "<code>%s</code>.</p><p>Try the same page through <a href=\"http://frogfind.com/read.php?a=%s\">"
-                     "FrogFind</a>, which converts it to plain HTTP.</p>", url, url);
-            b->pending_body = strdup(msg);
-            b->pending_len = strlen(msg);
-            b->pending_plain = false;
-            break;
-        }
+    b->pending_tls[0] = 0;
+    struct http_result *r = kmalloc(sizeof(*r));
+    for (int redirects = 0; redirects < 6; redirects++) {
         char status[96];
-        snprintf(status, sizeof(status), "Loading %.80s ...", url);
+        snprintf(status, sizeof(status), "%s %.80s ...", strncasecmp(url, "https://", 8) ? "Loading" : "Connecting securely to", url);
         set_status(b, status);
         notify_ui(b);
-        char *body = NULL;
-        size_t len = 0;
-        char loc[512];
-        int code = net_http_get_ex(url, &body, &len, loc, sizeof(loc), 12000);
-        if (code >= 300 && code < 400 && loc[0]) {
-            kfree(body);
+        int code = net_http_request(url, r, 15000);
+        if (code >= 300 && code < 400 && r->location[0]) {
+            kfree(r->body);
             char next[512];
-            resolve_url(url, loc, next, sizeof(next));
+            resolve_url(url, r->location, next, sizeof(next));
             strlcpy(url, next, sizeof(url));
             continue;
         }
         if (code < 0) {
-            char msg[600];
-            snprintf(msg, sizeof(msg), "<h1>Could not load the page</h1><p>%s did not answer. Check the address "
-                                       "and the network connection.</p>", url);
-            b->pending_body = strdup(msg);
+            bool secure = !strncasecmp(url, "https://", 8);
+            char *msg = kmalloc(2048);
+            snprintf(msg, 2048, "<title>%s</title><h1>%s</h1><p>%s</p><p><small>%s</small></p>%s",
+                     secure && strstr(r->error, "certificate") ? "Not secure" : "Could not load the page",
+                     secure && strstr(r->error, "certificate") ? "This connection is not private" : "Could not load the page",
+                     r->error[0] ? r->error : "The server did not answer.", url,
+                     secure && strstr(r->error, "certificate")
+                         ? "<p>Zenith Web checked the server's certificate against the trusted root certificates and "
+                           "it did not pass. The page was not loaded, so nobody could read or change what you send.</p>"
+                         : "<p>Check the address and the network connection.</p>");
+            b->pending_body = msg;
             b->pending_len = strlen(msg);
             b->pending_plain = false;
+            set_status(b, r->error[0] ? r->error : "Failed");
+            kfree(r->body);
         } else {
+            char *body = r->body;
+            size_t len = r->len;
+            strlcpy(b->pending_tls, r->tls, sizeof(b->pending_tls));
             b->pending_body = body ? body : strdup("");
             b->pending_len = body ? len : 0;
             /* treat bodies without tags as plain text */
-            b->pending_plain = body && !strstr_ci(body, "<html") && !strstr_ci(body, "<body") && !strstr_ci(body, "<p") &&
-                               !strstr_ci(body, "<a ");
-            snprintf(status, sizeof(status), "Done  ·  HTTP %d  ·  %lu bytes", code, len);
+            b->pending_plain = body && !strstr_ci(r->content_type, "html") && !strstr_ci(body, "<html") &&
+                               !strstr_ci(body, "<body") && !strstr_ci(body, "<p") && !strstr_ci(body, "<a ");
+            if (r->tls[0]) snprintf(status, sizeof(status), "Secure  ·  %s  ·  HTTP %d  ·  %lu bytes", r->tls, code, len);
+            else snprintf(status, sizeof(status), "Done  ·  HTTP %d  ·  %lu bytes (not encrypted)", code, len);
             set_status(b, status);
         }
         break;
     }
+    kfree(r);
     strlcpy(b->pending_url, url, sizeof(b->pending_url));
     b->loading = 2;
     notify_ui(b);
@@ -759,7 +765,7 @@ static surface_t *shrink(surface_t *s, int maxw)
 static void *fetch_bytes(const char *url, size_t *len)
 {
     if (!strncasecmp(url, "file://", 7)) return vfs_read_file(url + 7, len);
-    if (strncasecmp(url, "http://", 7)) return NULL;
+    if (strncasecmp(url, "http://", 7) && strncasecmp(url, "https://", 8)) return NULL;
     char cur[512], loc[512];
     strlcpy(cur, url, sizeof(cur));
     for (int redirects = 0; redirects < 4; redirects++) {
@@ -846,6 +852,7 @@ static void load_file(struct browser *b, const char *url, const char *path)
     }
     b->pending_body = out;
     b->pending_len = len;
+    b->pending_tls[0] = 0;
     strlcpy(b->pending_url, url, sizeof(b->pending_url));
     char status[96];
     snprintf(status, sizeof(status), "Local file  ·  %lu bytes", len);
@@ -864,7 +871,7 @@ static void navigate(struct browser *b, const char *target, bool record)
     else if (target[0] == '/')
         snprintf(url, sizeof(url), "file://%s", target);
     else if (strchr(target, '.') && !strchr(target, ' '))
-        snprintf(url, sizeof(url), "http://%s", target);
+        snprintf(url, sizeof(url), "https://%s", target);
     else {
         /* search via FrogFind */
         char q[400];
@@ -875,7 +882,7 @@ static void navigate(struct browser *b, const char *target, bool record)
             else o += (size_t)snprintf(q + o, sizeof(q) - o, "%%%02X", (uint8_t)*s);
         }
         q[o] = 0;
-        snprintf(url, sizeof(url), "http://frogfind.com/?q=%s", q);
+        snprintf(url, sizeof(url), "https://html.duckduckgo.com/html/?q=%s", q);
     }
     char *frag = strchr(url, '#');
     if (frag) *frag = 0;
@@ -899,6 +906,7 @@ static void navigate(struct browser *b, const char *target, bool record)
         mutex_unlock(&b->img_lock);
         b->scroll = 0;
         set_status(b, "Home");
+        b->tls[0] = 0;
         if (b->app->win) wm_set_title(b->app->win, "Zenith Web");
         return;
     }
@@ -945,6 +953,7 @@ static void br_paint(app_t *a, surface_t *s)
         b->pending_body = NULL;
         b->scroll = 0;
         b->loading = 0;
+        strlcpy(b->tls, b->pending_tls, sizeof(b->tls));
         if (b->page.nimgs) {
             __atomic_fetch_add(&b->img_threads, 1, __ATOMIC_SEQ_CST);
             thread_create("web-images", img_thread, b);
@@ -1017,7 +1026,16 @@ static void br_paint(app_t *a, surface_t *s)
     if (ui_icon_button(u, R(86, 10, 34, 32), ICON_RESTART, "Reload")) navigate(b, b->addr, false);
     if (ui_icon_button(u, R(124, 10, 34, 32), ICON_HOME, "Home")) navigate(b, "about:home", true);
     rect_t ar = R(166, 9, W - 176, 34);
-    if (ui_textbox(u, ar, b->addr, sizeof(b->addr), "Search or enter an http:// address")) {
+    bool secure = b->tls[0] && !strncasecmp(b->addr, "https://", 8) && !u->focus;
+    if (secure) {
+        /* a small padlock in front of the address */
+        int lx = ar.x + 10, ly = ar.y + 9;
+        gfx_ring(s, (float)lx + 6, (float)ly + 6, 4.5f, 2, theme.success);
+        gfx_round_rect(s, lx, ly + 6, 12, 10, 2, theme.success);
+        ar.x += 22;
+        ar.w -= 22;
+    }
+    if (ui_textbox(u, ar, b->addr, sizeof(b->addr), "Search or enter an address")) {
         char t[512];
         strlcpy(t, b->addr, sizeof(t));
         navigate(b, t, true);
