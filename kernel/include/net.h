@@ -4,16 +4,24 @@
 #include <kernel.h>
 
 struct net_info {
-    char ifname[8];
-    char driver[48];
+    char ifname[8];                         /* eth0, eth1, usb0 ... */
+    char driver[48];                        /* adapter model */
+    char drv[16];                           /* driver name, e.g. "e1000" */
     uint8_t mac[6];
     bool link;
+    bool is_default;                        /* carries the default route */
     uint32_t ip, netmask, gateway, dns;     /* host byte order */
-    uint64_t rx_packets, tx_packets, rx_bytes, tx_bytes;
+    uint64_t rx_packets, tx_packets, rx_bytes, tx_bytes, rx_dropped;
 };
 
+/* the interface that carries the default route (or the first one) */
 bool net_get_info(struct net_info *ni);
-bool net_dhcp(int timeout_ms);
+int  net_iface_count(void);
+bool net_iface_get(int i, struct net_info *ni);
+int  net_card_list(void (*cb)(void *ctx, const char *driver, const char *family, uint16_t vendor, uint16_t device,
+                              const char *model),
+                   void *ctx);
+bool net_dhcp(int timeout_ms);              /* every interface with a link */
 bool net_resolve(const char *host, uint32_t *ip, int timeout_ms);
 int  net_ping(uint32_t ip, uint16_t seq, int timeout_ms);          /* rtt ms, -1 on timeout */
 int  net_http_get(const char *url, char **body, size_t *len, int timeout_ms);  /* status or -1 */

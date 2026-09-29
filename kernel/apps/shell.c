@@ -1070,6 +1070,7 @@ static int c_time(struct shell *sh, int argc, char **argv);
 static int run_argv(struct shell *sh, int argc, char **argv);
 
 static int c_net(struct shell *sh, int argc, char **argv);
+static int c_netcards(struct shell *sh, int argc, char **argv);
 
 static const struct cmd commands[] = {
     { "help", c_help, "list commands" },
@@ -1131,6 +1132,7 @@ static const struct cmd commands[] = {
     { "hostname", c_hostname, "machine name" },
     { "ifconfig", c_net, "network interface status" },
     { "dhcp", c_net, "request an IP address" },
+    { "netcards", c_netcards, "supported network adapters" },
     { "ping", c_net, "ping a host" },
     { "nslookup", c_net, "resolve a host name" },
     { "wget", c_net, "download a file over HTTP or HTTPS" },
@@ -1169,34 +1171,79 @@ static int c_time(struct shell *sh, int argc, char **argv)
  * network commands
  * ---------------------------------------------------------------------- */
 
+struct card_ctx { struct shell *sh; const char *last; int n; };
+
+static void card_line(void *ctx, const char *driver, const char *family, uint16_t vendor, uint16_t device, const char *model)
+{
+    struct card_ctx *c = ctx;
+    if (!c->last || strcmp(c->last, driver)) {
+        pr(c->sh, "\n" C_BOLD "%s" C_RESET "  " C_DIM "%s" C_RESET "\n", driver, family);
+        c->last = driver;
+    }
+    pr(c->sh, "  %04x:%04x  %s\n", vendor, device, model);
+    c->n++;
+}
+
+static int c_netcards(struct shell *sh, int argc, char **argv)
+{
+    UNUSED(argc); UNUSED(argv);
+    struct card_ctx c = { sh, NULL, 0 };
+    net_card_list(card_line, &c);
+    pr(sh, "\n" C_BOLD "usb" C_RESET "  " C_DIM "USB network adapters and phones (USB tethering)" C_RESET "\n");
+    pr(sh, "  any        CDC Ethernet (ECM) class devices\n");
+    pr(sh, "  any        RNDIS devices (Android USB tethering)\n");
+    pr(sh, "\n%d PCI models plus USB class devices\n", c.n);
+    return 0;
+}
+
+static void print_iface(struct shell *sh, struct net_info *ni)
+{
+    char ip[20], gw[20], dns[20], mask[20];
+    ip_to_str(ni->ip, ip);
+    ip_to_str(ni->gateway, gw);
+    ip_to_str(ni->dns, dns);
+    ip_to_str(ni->netmask, mask);
+    pr(sh, C_BOLD "%s" C_RESET ": %s  link %s%s\n", ni->ifname, ni->driver,
+       ni->link ? C_GREEN "up" C_RESET : C_RED "down" C_RESET, ni->is_default ? C_CYAN "  (default route)" C_RESET : "");
+    pr(sh, "    ether %02x:%02x:%02x:%02x:%02x:%02x  driver %s\n", ni->mac[0], ni->mac[1], ni->mac[2], ni->mac[3],
+       ni->mac[4], ni->mac[5], ni->drv);
+    if (ni->ip) {
+        pr(sh, "    inet  %s  netmask %s\n", ip, mask);
+        pr(sh, "    gateway %s, dns %s\n", gw, dns);
+    } else {
+        pr(sh, "    inet  (none)\n");
+    }
+    pr(sh, "    rx %lu packets (%lu bytes), tx %lu packets (%lu bytes)%s\n", ni->rx_packets, ni->rx_bytes, ni->tx_packets,
+       ni->tx_bytes, ni->rx_dropped ? ", bad checksums dropped" : "");
+}
+
 static int c_net(struct shell *sh, int argc, char **argv)
 {
     struct net_info ni;
     if (!net_get_info(&ni)) {
-        err(sh, argv[0], "no network adapter found");
+        err(sh, argv[0], "no network adapter found (see netcards for supported ones)");
         return 1;
     }
-    char ip[20], gw[20], dns[20], mask[20];
-    ip_to_str(ni.ip, ip);
-    ip_to_str(ni.gateway, gw);
-    ip_to_str(ni.dns, dns);
-    ip_to_str(ni.netmask, mask);
+    char ip[20], gw[20];
     if (!strcmp(argv[0], "ifconfig")) {
-        pr(sh, C_BOLD "%s" C_RESET ": %s  link %s\n", ni.ifname, ni.driver, ni.link ? C_GREEN "up" C_RESET : C_RED "down" C_RESET);
-        pr(sh, "    ether %02x:%02x:%02x:%02x:%02x:%02x\n", ni.mac[0], ni.mac[1], ni.mac[2], ni.mac[3], ni.mac[4], ni.mac[5]);
-        pr(sh, "    inet  %s  netmask %s\n", ni.ip ? ip : "(none)", mask);
-        pr(sh, "    route default via %s, dns %s\n", gw, dns);
-        pr(sh, "    rx %lu packets (%lu bytes), tx %lu packets (%lu bytes)\n", ni.rx_packets, ni.rx_bytes, ni.tx_packets,
-           ni.tx_bytes);
+        for (int i = 0; i < net_iface_count(); i++) {
+            struct net_info x;
+            if (!net_iface_get(i, &x)) continue;
+            if (i) pr(sh, "\n");
+            print_iface(sh, &x);
+        }
         return 0;
     }
     if (!strcmp(argv[0], "dhcp")) {
-        pr(sh, "Requesting an address...\n");
+        pr(sh, "Requesting addresses...\n");
         if (net_dhcp(3000)) {
-            net_get_info(&ni);
-            ip_to_str(ni.ip, ip);
-            ip_to_str(ni.gateway, gw);
-            pr(sh, C_GREEN "bound to %s" C_RESET " (gateway %s)\n", ip, gw);
+            for (int i = 0; i < net_iface_count(); i++) {
+                struct net_info x;
+                if (!net_iface_get(i, &x) || !x.ip) continue;
+                ip_to_str(x.ip, ip);
+                ip_to_str(x.gateway, gw);
+                pr(sh, "%s: " C_GREEN "bound to %s" C_RESET " (gateway %s)\n", x.ifname, ip, gw);
+            }
             return 0;
         }
         err(sh, "dhcp", "no answer");

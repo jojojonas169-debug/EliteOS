@@ -32,9 +32,14 @@ Some highlights:
 - **Protected user programs.** Programs in `/bin` are ELF executables that run
   in ring 3 in their own address space and talk to the kernel through system
   calls. A crashing program is terminated; the system keeps running.
-- **Networking.** An Intel e1000 driver plus its own TCP/IP stack: DHCP, ARP,
-  ICMP ping, DNS, and TCP with many parallel connections, retransmission and
-  flow control. HTTP/1.1 with chunked transfers and gzip; `wget` and `curl`.
+- **Networking.** Drivers for 11 families of Ethernet adapters — 162 PCI IDs of
+  Intel, Realtek, AMD, NE2000, DEC, virtio and VMware chips — plus USB network
+  adapters and phones (USB tethering). All adapters run at the same time, each
+  with its own DHCP lease; unplug one and traffic moves to the next. Its own
+  TCP/IP stack: ARP, IPv4 with checksum verification, ICMP ping, DNS, and TCP
+  with many parallel connections, retransmission, flow control and
+  out-of-order reassembly. HTTP/1.1 with chunked transfers and gzip; `wget`
+  and `curl`. See [Network adapters](#network-adapters).
 - **Real HTTPS.** A TLS 1.3 client written from scratch (RFC 8446) with its
   own cryptography: AES-GCM, ChaCha20-Poly1305, SHA-2, HKDF, X25519,
   P-256/P-384 ECDH and ECDSA, RSA-PSS/PKCS#1. Server certificates are
@@ -83,6 +88,8 @@ Some highlights:
 | Install ZenithOS onto a disk | JPEG and PNG pictures loaded over HTTP |
 | ![HTTPS in Zenith Web](docs/https.png) | ![TLS in the terminal](docs/tls-terminal.png) |
 | An HTTPS page with pictures (TLS 1.3, padlock) | `wget` over TLS 1.3; untrusted and mismatched certificates refused |
+| ![Three network adapters](docs/adapters.png) | ![Network settings](docs/settings-network.png) |
+| Realtek, virtio and a USB adapter, all configured by DHCP | Settings lists every adapter and the default route |
 
 ## Trying it
 
@@ -96,6 +103,7 @@ On a Debian/Ubuntu machine:
 sudo apt install build-essential clang lld mtools dosfstools xorriso qemu-system-x86 ovmf python3
 make            # -> build/zenithos.iso
 make run        # boots the ISO in QEMU: 4 CPUs, network, sound and a 1 GiB SATA disk
+make run NIC=rtl8139   # ... with another network adapter (see Network adapters)
 ```
 
 `make run` creates `build/disk.img` (GPT + FAT32) on first use; it shows up as
@@ -111,8 +119,8 @@ make run        # boots the ISO in QEMU: 4 CPUs, network, sound and a 1 GiB SATA
   (the mouse follows the host pointer thanks to the VMware absolute-pointer
   protocol that QEMU provides).
 - **VirtualBox / VMware:** create a 64-bit "Other" VM, **enable EFI**, give it
-  2 GB of RAM and a few CPUs, attach the ISO. Use an Intel PRO/1000 (e1000)
-  network adapter for networking.
+  2 GB of RAM and a few CPUs, attach the ISO. All of the usual virtual network
+  adapters work: Intel PRO/1000, PCnet, virtio-net and VMware's vmxnet3.
 
 ### Real hardware
 
@@ -125,7 +133,8 @@ sudo dd if=build/zenithos.iso of=/dev/sdX bs=4M status=progress conv=fsync
 The live system runs from RAM. SATA disks with a FAT32 volume are mounted at
 `/disk`, and nothing is written to a disk unless you save files there or run
 the installer. Keyboards and mice work over USB (xHCI, also behind hubs) or
-PS/2; sound works on Intel HD Audio. Press a key during the boot countdown to
+PS/2; sound works on Intel HD Audio. For the network, see the adapter list
+below — or plug in an Android phone and switch on USB tethering. Press a key during the boot countdown to
 pick a different screen resolution; the installer remembers the current one.
 
 ## Using it
@@ -161,11 +170,42 @@ completion, `>`/`>>` redirection and about 65 built-in commands, for example
 ls -l   cd   cat   grep   tree   hexdump   cp   mv   rm -r   edit
 ps   kill   free   df   uptime   lscpu   lspci   dmesg   neofetch
 lsblk   mount   umount   sync   mkfs   install   play   beep   volume
-ifconfig   dhcp   ping   nslookup   wget   curl   sha256sum   calc   bench
+ifconfig   dhcp   netcards   ping   nslookup   wget   curl   sha256sum   calc
 ```
 
 `open` starts apps, files and web pages (`open http://example.com`).
 Anything else is looked up in `/bin` and started as a user process.
+
+## Network adapters
+
+`netcards` in the terminal prints every supported model. Each driver was
+tested in QEMU by booting, getting a DHCP lease and downloading 5 MB over
+HTTP (and over HTTPS for some) with the SHA-256 checked — every model QEMU
+can emulate passed. Chips that no emulator provides are driven the same way
+but have not run yet; they are marked below.
+
+| Driver | Adapters | Tested in QEMU |
+|---|---|---|
+| `e1000` | Intel PRO/1000 8254x: 82540EM/EP, 82541, 82543GC, 82544, 82545, 82546, 82547 (23 IDs) | 82540EM, 82544GC, 82545EM |
+| `e1000e` | Intel 82571/2/3/4, 82583 and the chipset LAN from ICH8 to the 300-series chipsets: 82566/7/77/78/79, I217, I218, I219 (50 IDs) | 82574L; chipset parts untested |
+| `igb` | Intel 82575, 82576, 82580, I350, I210, I211 (20 IDs) | 82576 |
+| `eepro100` | Intel PRO/100: 82557/8/9, 82550/1, 82562 in ICH2 – ICH7 (27 IDs) | all 15 QEMU models (82557A–C, 82558A/B, 82559A–C/ER, 82550, 82551, 82562, 82801) |
+| `rtl8139` | Realtek RTL8139 and 13 boards built on it (D-Link, SMC, Edimax, Planex ...) | RTL8139 |
+| `r8169` | Realtek RTL8169/8110, RTL8111/8168, RTL8101/8102 (10 IDs) | **untested** — no emulator has it |
+| `pcnet` | AMD PCnet Am79C970/970A/971/972/973/975/978 (VirtualBox's default) | Am79C970A |
+| `ne2k-pci` | NE2000-compatible PCI cards: RTL8029, Winbond, VIA, Compex, Holtek ... (10 IDs) | RTL8029 |
+| `tulip` | DEC 21140/21140A/21142/21143 | 21143 |
+| `virtio-net` | virtio 1.0 and legacy virtio (QEMU/KVM, cloud VMs, VirtualBox) | both interfaces |
+| `vmxnet3` | VMware vmxnet3 | yes |
+| `cdc_ecm`, `rndis` | USB network adapters and phones: CDC Ethernet and RNDIS (Android USB tethering) | both, on QEMU's usb-net |
+
+**Wi-Fi.** ZenithOS has no Wi-Fi driver. A Wi-Fi card needs far more than an
+Ethernet card: each chip family (Intel iwlwifi, Realtek, MediaTek, Broadcom,
+Qualcomm) wants its vendor's firmware loaded, an 802.11 stack for scanning
+and association, and WPA2/WPA3 authentication. No virtual machine emulates a
+Wi-Fi card, so none of it could be tested. What works instead: connect an
+Android phone with a USB cable and turn on *USB tethering* — the phone shares
+its Wi-Fi or mobile connection and ZenithOS sees it as `usb0`.
 
 ## Writing programs
 
@@ -203,8 +243,10 @@ kernel/
   dev/       ACPI, local APIC + I/O APIC, timers, RTC, PS/2 + vmmouse, xHCI USB + HID,
              AHCI SATA, block devices + GPT/MBR, HD Audio + mixer/synth, PCI, serial, power
   fs/        VFS with mount points, RAM file system, tar initrd loader, FAT32, tty
-  net/       e1000 driver, Ethernet/ARP/IPv4/ICMP/UDP, TCP, DHCP, DNS, HTTP/1.1,
-             TLS 1.3, X.509 and the root certificate store
+  net/       Ethernet/ARP/IPv4/ICMP/UDP with several interfaces, TCP, DHCP, DNS,
+             HTTP/1.1, TLS 1.3, X.509 and the root certificate store
+  net/nic/   network drivers: e1000/e1000e/igb, eepro100, rtl8139, r8169, pcnet,
+             ne2k-pci, tulip, virtio-net, vmxnet3, USB CDC Ethernet and RNDIS
   crypto/    SHA-2, HMAC/HKDF, AES-GCM, ChaCha20-Poly1305, X25519, P-256/P-384, RSA,
              random numbers
   gfx/       2D graphics (anti-aliased shapes, gradients, blur, shadows), font renderer
@@ -214,10 +256,12 @@ user/        libc and ring-3 programs
 tools/       font baking, symbol table generation, headless QEMU test driver
 ```
 
-About 27 000 lines of C, assembly and Python.
+About 35 000 lines of C, assembly and Python.
 
 `tools/qemu-test.py` boots the system headless, types, clicks and takes
-screenshots through QMP — that is how the pictures above were made.
+screenshots through QMP — that is how the pictures above were made. With
+`--nic` it picks the network adapters (`--nic rtl8139,usb-net`), and scripts
+can pull a cable (`link n0 off`) or unplug a device (`devdel`).
 `make test` builds the cryptography, certificate and TLS building blocks for
 the host and checks them against RFC/NIST test vectors, keys and signatures
 made by OpenSSL, all 146 Mozilla roots and a test PKI.
@@ -228,7 +272,11 @@ Version 1.0 "Aurora". It boots, it is fun, and it is honest about its limits:
 
 - Only `/disk` (FAT32 on SATA) is persistent; the rest of the tree lives in
   RAM. No NVMe or USB storage yet, and no ext4/NTFS.
-- USB covers keyboards, mice and tablets (no USB 3 hubs).
+- USB covers keyboards, mice, tablets and network adapters (no USB 3 hubs,
+  no USB storage).
+- No Wi-Fi (see above). The Realtek RTL8169/8111 driver and the Intel chipset
+  LAN parts (I217–I219) have not been tried on real hardware yet. USB
+  tethering covers RNDIS and CDC Ethernet, not the newer CDC NCM.
 - TLS 1.3 only: servers that still speak nothing newer than TLS 1.2 cannot
   be reached. No IPv6 yet. Zenith Web renders HTML structure and pictures
   (PNG, baseline JPEG) — no CSS or JavaScript.

@@ -407,7 +407,8 @@ static void settings_paint(app_t *a, surface_t *s)
         struct net_info ni;
         if (!net_get_info(&ni)) {
             gfx_text(s, font_ui_lg, x, y, "No supported network adapter found.", theme.text_dim);
-            gfx_text(s, font_ui, x, y + 26, "ZenithOS supports Intel e1000 (QEMU default, VirtualBox, VMware).", theme.text_faint);
+            gfx_text(s, font_ui, x, y + 26, "ZenithOS drives Intel, Realtek, AMD, NE2000, Tulip, virtio, VMware and USB adapters", theme.text_faint);
+            gfx_text(s, font_ui, x, y + 46, "(type netcards in the Terminal). No Wi-Fi yet: plug in a phone and turn on USB tethering.", theme.text_faint);
             break;
         }
         char ip[20], gw[20], dns[20], b[64];
@@ -421,9 +422,27 @@ static void settings_paint(app_t *a, surface_t *s)
             gfx_text(s, font_ui_md, x + 160, y + i * 28, vals[i], theme.text);
         }
         y += 6 * 28 + 12;
-        snprintf(b, sizeof(b), "Received %lu packets, sent %lu", ni.rx_packets, ni.tx_packets);
+        snprintf(b, sizeof(b), "%s: received %lu packets, sent %lu", ni.ifname, ni.rx_packets, ni.tx_packets);
         gfx_text(s, font_ui, x, y, b, theme.text_faint);
         if (ui_button(u, R(x, y + 30, 180, 38), "Renew address (DHCP)", BTN_PRIMARY)) app_launch("netinfo");
+        y += 90;
+        int n = net_iface_count();
+        if (n > 1) {
+            gfx_text(s, font_ui_md, x, y, "All adapters", theme.text);
+            y += 30;
+            for (int i = 0; i < n; i++) {
+                struct net_info a;
+                if (!net_iface_get(i, &a)) continue;
+                char line[128], aip[20];
+                ip_to_str(a.ip, aip);
+                snprintf(line, sizeof(line), "%s  %s", a.ifname, a.driver);
+                gfx_text(s, font_ui, x, y, line, a.link ? theme.text : theme.text_faint);
+                snprintf(line, sizeof(line), "%s%s", !a.link ? "disconnected" : a.ip ? aip : "configuring...",
+                         a.is_default ? "  (default)" : "");
+                gfx_text(s, font_ui, x + 420, y, line, a.link ? theme.text_dim : theme.text_faint);
+                y += 24;
+            }
+        }
         break;
     }
     case 4: {

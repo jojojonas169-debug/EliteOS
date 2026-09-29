@@ -1,13 +1,17 @@
 /*
- * USB: xHCI host controller driver with USB 2.0 hub support and HID
- * keyboards, mice and tablets. Everything runs on one polling thread, so
- * no interrupt routing is needed and the code needs no locks.
+ * USB: xHCI host controller driver with USB 2.0 hub support, HID
+ * keyboards, mice and tablets, and bulk/interrupt endpoints for class
+ * drivers outside this file (USB networking). Everything runs on one
+ * polling thread, so no interrupt routing is needed; only endpoints that
+ * other threads submit transfers to have a lock.
  */
 #include <kernel.h>
 #include <dev.h>
 #include <mm.h>
 #include <sched.h>
 #include <input.h>
+#include <spinlock.h>
+#include <usb.h>
 #include <x86.h>
 
 /* ------------------------------------------------------------------------
@@ -89,8 +93,26 @@ struct usb_func {
     uint64_t repeat_at;
 };
 
+/* an endpoint opened for a class driver */
+struct usb_ep {
+    struct usb_dev *d;
+    int dci, mps;
+    bool in;
+    struct ring ring;
+    spinlock_t lock;
+    int outstanding;
+    uintptr_t tags[RING_TRBS];
+    usb_done_fn done;
+    void *ctx;
+};
+
 struct usb_dev {
     struct xhci *hc;
+    struct usb_dev *parent;
+    int parent_port;
+    struct usb_ep *eps[32];
+    void (*detach)(void *ctx);
+    void *detach_ctx;
     int slot;
     int root_port;
     int speed;
@@ -269,6 +291,90 @@ static int control(struct usb_dev *d, uint8_t type, uint8_t req, uint16_t value,
         command(hc, deq | d->ep0.cycle, (16u << 10) | (1u << 16) | ((uint32_t)d->slot << 24), NULL);
     }
     return cc == 1 || cc == 13 ? 0 : -1;
+}
+
+/* ------------------------------------------------------------------------
+ * class driver interface (usb.h)
+ * ---------------------------------------------------------------------- */
+
+int usb_ctrl(struct usb_dev *d, uint8_t type, uint8_t req, uint16_t value, uint16_t index, void *data, uint16_t len)
+{
+    if (len > PAGE_SIZE || d->dead) return -1;
+    if (!(type & 0x80) && len) memcpy(d->xfer, data, len);
+    int r = control(d, type, req, value, index, len);
+    if (!r && (type & 0x80) && len) memcpy(data, d->xfer, len);
+    return r;
+}
+
+int usb_speed(struct usb_dev *d) { return d->speed; }
+void usb_set_name(struct usb_dev *d, const char *name) { strlcpy(d->name, name, sizeof(d->name)); }
+
+void usb_set_detach(struct usb_dev *d, void (*detach)(void *ctx), void *ctx)
+{
+    d->detach = detach;
+    d->detach_ctx = ctx;
+}
+
+static int xhci_interval(int speed, int binterval);
+
+bool usb_open_endpoints(struct usb_dev *d, const struct usb_ep_desc *e, int n, struct usb_ep **out, usb_done_fn done,
+                        void *cookie)
+{
+    struct xhci *hc = d->hc;
+    memset(d->in_ctx, 0, 4096);
+    uint32_t *icc = ctx(hc, d->in_ctx, 0);
+    icc[1] = 1;
+    uint32_t *sc = ctx(hc, d->in_ctx, 1);
+    memcpy(sc, ctx(hc, d->out_ctx, 0), (size_t)hc->csz);
+    int max_dci = (int)(sc[0] >> 27);
+    for (int i = 0; i < n; i++) {
+        struct usb_ep *ep = kzalloc(sizeof(*ep));
+        if (!ep || !ring_init(hc, &ep->ring)) return false;
+        ep->d = d;
+        ep->in = e[i].addr & 0x80;
+        ep->dci = (e[i].addr & 15) * 2 + (ep->in ? 1 : 0);
+        ep->mps = e[i].mps & 0x7FF;
+        ep->lock = (spinlock_t)SPINLOCK_INIT("usb-ep");
+        ep->done = done;
+        ep->ctx = cookie;
+        bool intr = (e[i].attr & 3) == 3;
+        uint32_t type = intr ? (ep->in ? 7u : 3u) : (ep->in ? 6u : 2u);
+        uint32_t *epc = ctx(hc, d->in_ctx, ep->dci + 1);
+        epc[0] = intr ? (uint32_t)xhci_interval(d->speed, e[i].interval) << 16 : 0;
+        epc[1] = (3u << 1) | (type << 3) | ((uint32_t)ep->mps << 16);
+        epc[2] = (uint32_t)ep->ring.phys | 1;
+        epc[3] = (uint32_t)(ep->ring.phys >> 32);
+        epc[4] = intr ? ((uint32_t)ep->mps | ((uint32_t)ep->mps << 16)) : 3072;
+        icc[1] |= 1u << ep->dci;
+        max_dci = MAX(max_dci, ep->dci);
+        out[i] = ep;
+    }
+    sc[0] = (sc[0] & ~(31u << 27)) | ((uint32_t)max_dci << 27);
+    if (command(hc, d->in_phys, (TRB_CONFIG_EP << 10) | ((uint32_t)d->slot << 24), NULL) != 1) {
+        klog("usb: configure endpoint failed for slot %d", d->slot);
+        return false;
+    }
+    for (int i = 0; i < n; i++) d->eps[out[i]->dci] = out[i];
+    return true;
+}
+
+/* queue one transfer (a normal TRB); completion arrives through ep->done */
+bool usb_submit(struct usb_ep *ep, uint64_t phys, uint32_t len, uintptr_t tag)
+{
+    if (ep->d->dead) return false;
+    spin_lock(&ep->lock);
+    if (ep->outstanding >= RING_TRBS / 2) {
+        spin_unlock(&ep->lock);
+        return false;
+    }
+    unsigned idx = ep->ring.enq;
+    ep->tags[idx] = tag;
+    ep->outstanding++;
+    /* interrupt on completion and on short packet */
+    ring_push(&ep->ring, phys, len, (TRB_NORMAL << 10) | (1u << 5) | (1u << 2));
+    doorbell(ep->d->hc, ep->d->slot, (uint32_t)ep->dci);
+    spin_unlock(&ep->lock);
+    return true;
 }
 
 /* ------------------------------------------------------------------------
@@ -454,6 +560,36 @@ static void queue_report(struct usb_dev *d, struct usb_func *f, int slot_i)
  * events
  * ---------------------------------------------------------------------- */
 
+/* a device went away: tell its class driver, then everything behind it */
+static void device_gone(struct usb_dev *d)
+{
+    if (d->dead) return;
+    d->dead = true;
+    if (d->detach) d->detach(d->detach_ctx);
+    klog("usb: %s disconnected", d->name[0] ? d->name : "device");
+    for (int i = 0; i < ndevices; i++)
+        if (devices[i]->parent == d) device_gone(devices[i]);
+}
+
+static void ep_complete(struct usb_ep *ep, struct trb *ev)
+{
+    if (ev->param < ep->ring.phys || ev->param >= ep->ring.phys + RING_TRBS * sizeof(struct trb)) return;
+    unsigned idx = (unsigned)((ev->param - ep->ring.phys) / sizeof(struct trb));
+    struct trb *t = &ep->ring.t[idx];
+    uint32_t requested = t->status & 0x1FFFF;
+    uint32_t residual = ev->status & 0xFFFFFF;
+    int cc = (int)(ev->status >> 24);
+    uintptr_t tag = ep->tags[idx];
+    spin_lock(&ep->lock);
+    ep->outstanding--;
+    spin_unlock(&ep->lock);
+    if (cc == 4 || cc == 6) {                       /* transaction error or stall: unplugged or broken */
+        device_gone(ep->d);
+        return;
+    }
+    if (ep->done) ep->done(ep->ctx, ep, tag, cc, residual <= requested ? requested - residual : 0);
+}
+
 static void handle_event(struct xhci *hc, struct trb *ev)
 {
     int type = (ev->control >> 10) & 63;
@@ -461,13 +597,21 @@ static void handle_event(struct xhci *hc, struct trb *ev)
         int port = (int)(ev->param >> 24) & 0xFF;
         uint32_t sc = r32(hc->op, OP_PORTSC(port));
         w32(hc->op, OP_PORTSC(port), (sc & ~PORT_PED & ~PORT_CHANGE_BITS) | (sc & PORT_CHANGE_BITS));
-        if (!(sc & PORT_CCS)) hc->port_seen &= ~(1u << port);
+        if (!(sc & PORT_CCS)) {
+            hc->port_seen &= ~(1u << port);
+            for (int i = 0; i < ndevices; i++)
+                if (devices[i]->hc == hc && devices[i]->root_port == port && !devices[i]->parent) device_gone(devices[i]);
+        }
         return;
     }
     if (type != TRB_EV_TRANSFER) return;
     int slot = (int)(ev->control >> 24), dci = (int)(ev->control >> 16) & 31;
     struct usb_dev *d = hc->slots[slot];
     if (!d) return;
+    if (d->eps[dci]) {
+        ep_complete(d->eps[dci], ev);
+        return;
+    }
     int cc = (int)(ev->status >> 24);
     for (int i = 0; i < d->nfuncs; i++) {
         struct usb_func *f = &d->funcs[i];
@@ -550,7 +694,13 @@ static void hub_scan(struct usb_dev *hub)
         uint16_t ch = (uint16_t)(hub->xfer[2] | hub->xfer[3] << 8);
         if (ch & 1) control(hub, 0x23, 1, 16, (uint16_t)p, 0);       /* clear C_PORT_CONNECTION */
         bool connected = st & 1;
-        if (!connected) { hub->hub_seen &= ~(1u << p); continue; }
+        if (!connected) {
+            if (hub->hub_seen & (1u << p))
+                for (int i = 0; i < ndevices; i++)
+                    if (devices[i]->parent == hub && devices[i]->parent_port == p) device_gone(devices[i]);
+            hub->hub_seen &= ~(1u << p);
+            continue;
+        }
         if (hub->hub_seen & (1u << p)) continue;
         control(hub, 0x23, 3, 4, (uint16_t)p, 0);                    /* PORT_RESET */
         for (int i = 0; i < 50; i++) {
@@ -660,6 +810,8 @@ static void enumerate(struct xhci *hc, int root_port, int speed, struct usb_dev 
     d->root_port = root_port;
     d->speed = speed;
     if (parent) {
+        d->parent = parent;
+        d->parent_port = parent_port;
         d->depth = parent->depth + 1;
         d->route = parent->route | ((uint32_t)MIN(parent_port, 15) << (4 * parent->depth));
         if (parent->speed == 3 && speed < 3) { d->tt_slot = parent->slot; d->tt_port = parent_port; }
@@ -705,8 +857,17 @@ static void enumerate(struct xhci *hc, int root_port, int speed, struct usb_dev 
         command(hc, d->in_phys, (TRB_EVAL_CTX << 10) | ((uint32_t)slot << 24), NULL);
     }
     if (control(d, 0x80, 6, 0x0100, 0, 18)) return;
+    uint8_t dev_desc[18];
+    memcpy(dev_desc, d->xfer, 18);
     uint8_t dev_class = d->xfer[4];
     uint16_t vid = (uint16_t)(d->xfer[8] | d->xfer[9] << 8), pid = (uint16_t)(d->xfer[10] | d->xfer[11] << 8);
+    static const char *speeds[] = { "?", "full", "low", "high", "super" };
+    if (dev_class != 9 && usbnet_probe(d, dev_desc)) {
+        klog("usb: slot %d port %d (%s speed%s): %s", slot, root_port, speeds[CLAMP(speed, 0, 4)],
+             parent ? ", behind hub" : "", d->name);
+        if (ndevices < 32) devices[ndevices++] = d;
+        return;
+    }
     if (control(d, 0x80, 6, 0x0200, 0, 9)) return;
     int total = MIN(d->xfer[2] | d->xfer[3] << 8, 1024);
     uint8_t cfg_value = d->xfer[5];
@@ -715,7 +876,6 @@ static void enumerate(struct xhci *hc, int root_port, int speed, struct usb_dev 
     memcpy(cfg, d->xfer, (size_t)total);
     control(d, 0x00, 9, cfg_value, 0, 0);                /* SET_CONFIGURATION */
 
-    static const char *speeds[] = { "?", "full", "low", "high", "super" };
     if (dev_class == 9) {
         setup_hub(d);
     } else {
@@ -853,6 +1013,7 @@ static int usb_thread(void *arg)
             struct trb ev;
             while (event_pop(hcs[i], &ev)) handle_event(hcs[i], &ev);
         }
+        usbnet_service();
         uint64_t now = uptime_ms();
         /* software key repeat for USB keyboards */
         for (int i = 0; i < ndevices; i++) {

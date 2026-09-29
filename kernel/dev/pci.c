@@ -42,9 +42,22 @@ void pci_write16(uint8_t bus, uint8_t dev, uint8_t fn, uint8_t off, uint16_t v)
 void pci_enable_busmaster(struct pci_dev *d)
 {
     uint16_t cmd = pci_read16(d->bus, d->dev, d->fn, 0x04);
-    cmd |= 0x0006;          /* memory space + bus master */
+    cmd |= 0x0007;          /* I/O space + memory space + bus master */
     cmd &= (uint16_t)~0x0400;  /* interrupts enabled */
     pci_write16(d->bus, d->dev, d->fn, 0x04, cmd);
+}
+
+/* offset of the next capability with this id after `after` (0 = from the start), 0 if none */
+uint8_t pci_find_cap(struct pci_dev *d, uint8_t id, uint8_t after)
+{
+    if (!(pci_read16(d->bus, d->dev, d->fn, 0x06) & 0x10)) return 0;
+    uint8_t off = after ? (uint8_t)(pci_read32(d->bus, d->dev, d->fn, after) >> 8) : (uint8_t)pci_read32(d->bus, d->dev, d->fn, 0x34);
+    for (int guard = 0; off >= 0x40 && guard < 48; guard++) {
+        uint32_t v = pci_read32(d->bus, d->dev, d->fn, off & 0xFC);
+        if ((v & 0xFF) == id) return off & 0xFC;
+        off = (uint8_t)(v >> 8);
+    }
+    return 0;
 }
 
 uint64_t pci_bar_addr(struct pci_dev *d, int bar)

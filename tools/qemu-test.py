@@ -15,6 +15,8 @@ A script is a list of steps, one per line:
     click [left|right] [x y]    click, optionally after moving
     drag <x0> <y0> <x1> <y1>    left-drag
     wheel <n>                   scroll
+    link <netdev> on|off        plug/unplug a network cable (netdevs are n0, n1, ...)
+    devdel <id>                 hot-unplug a device (e.g. --nic usb-net:id=u0)
 """
 import argparse
 import json
@@ -65,8 +67,8 @@ class QMP:
         self.f.readline()
         self.cmd('qmp_capabilities')
 
-    def cmd(self, name, **args):
-        self.f.write(json.dumps({'execute': name, 'arguments': args}) + '\n')
+    def cmd(self, command, **args):
+        self.f.write(json.dumps({'execute': command, 'arguments': args}) + '\n')
         self.f.flush()
         while True:
             line = self.f.readline()
@@ -136,6 +138,9 @@ def main():
     ap.add_argument('--res', default='1280x800')
     ap.add_argument('--extra', default='')
     ap.add_argument('--disk', help='raw disk image attached as a SATA drive')
+    ap.add_argument('--nic', default='e1000',
+                    help='comma separated network adapter models, each on its own user-mode network '
+                         '(e.g. rtl8139,pcnet or usb-net); "none" for no adapter')
     args = ap.parse_args()
 
     os.makedirs(args.out, exist_ok=True)
@@ -150,8 +155,13 @@ def main():
            '-drive', f'if=pflash,format=raw,file={vars_path}',
            '-display', 'none', '-serial', f'file:{serial_log}',
            '-qmp', f'unix:{qmp_path},server,nowait',
-           '-netdev', 'user,id=n0', '-device', 'e1000,netdev=n0',
            '-accel', 'tcg,thread=multi']
+    nics = [n for n in args.nic.split(',') if n and n != 'none']
+    if any(n.startswith('usb-net') for n in nics):
+        cmd += ['-device', 'qemu-xhci,id=xhci']
+    for i, n in enumerate(nics):
+        model, _, opts = n.partition(':')
+        cmd += ['-netdev', f'user,id=n{i}', '-device', f'{model},netdev=n{i}' + (',' + opts.replace(':', ',') if opts else '')]
     if args.iso != 'none':
         cmd += ['-cdrom', args.iso]
     if args.disk:
@@ -204,6 +214,10 @@ def main():
                 for i in range(1, 9):
                     qmp.move(x0 + (x1 - x0) * i // 8, y0 + (y1 - y0) * i // 8, w, h)
                 qmp.button('left', False)
+            elif op == 'link':
+                qmp.cmd('set_link', name=a[0], up=a[1] == 'on')
+            elif op == 'devdel':
+                qmp.cmd('device_del', id=a[0])
             elif op == 'wheel':
                 n = int(a[0])
                 btn = 'wheel-up' if n > 0 else 'wheel-down'

@@ -133,6 +133,7 @@ int net_http_request(const char *url, struct http_result *r, int timeout_ms)
         snprintf(r->error, sizeof(r->error), "could not find the server '%s'", host);
         return -1;
     }
+    uint64_t t0 = uptime_ms();
     struct conn c = { 0 };
     c.sock = tcp_connect(ip, port, MIN(timeout_ms, 8000));
     if (!c.sock) {
@@ -224,6 +225,10 @@ int net_http_request(const char *url, struct http_result *r, int timeout_ms)
         strlcpy(r->error, len ? "the server's answer was not HTTP" : "the server sent nothing back", sizeof(r->error));
     }
     kfree(buf);
+    /* the log keeps the path but not the query string (search terms, tokens) */
+    const char *q = strchr(path, '?');
+    klog("http: GET %s%s:%u%.*s -> %d, %zu bytes in %lu ms", https ? "https://" : "http://", host, port,
+         q ? (int)(q - path) : (int)strlen(path), path, r->status, r->len, uptime_ms() - t0);
 done:
     if (c.tls) tls_close(c.tls);
     tcp_close(c.sock);

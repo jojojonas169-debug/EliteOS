@@ -117,6 +117,26 @@ uint64_t pmm_alloc_contig(size_t count)
     return pa;
 }
 
+/* `count` zeroed contiguous pages that end below `limit` */
+uint64_t pmm_alloc_contig_below(size_t count, uint64_t limit)
+{
+    spin_lock(&pmm_lock);
+    uint64_t end = MIN(npages, limit / PAGE_SIZE), run = 0;
+    for (uint64_t p = 256; p < end; p++) {
+        if (is_used(p)) { run = 0; continue; }
+        if (++run == count) {
+            uint64_t first = p - count + 1;
+            for (uint64_t q = first; q <= p; q++) set_used(q);
+            free_count -= count;
+            spin_unlock(&pmm_lock);
+            memset(P2V(first * PAGE_SIZE), 0, count * PAGE_SIZE);
+            return first * PAGE_SIZE;
+        }
+    }
+    spin_unlock(&pmm_lock);
+    return 0;
+}
+
 /* one zeroed page below `limit` (for DMA engines limited to 32-bit addresses) */
 uint64_t pmm_alloc_below(uint64_t limit)
 {

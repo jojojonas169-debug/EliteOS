@@ -1,8 +1,10 @@
 /*
  * TCP (RFC 793/9293), client side: up to 32 connections at once, MSS
  * negotiation, send and receive windows, retransmission with exponential
- * back-off, orderly close. Incoming segments are handled on the network
- * thread; tcp_timer() runs there too.
+ * back-off, orderly close. Segments that arrive ahead of a lost one are
+ * kept and used once the gap is filled, so one lost packet costs one
+ * retransmission rather than the rest of the window. Incoming segments
+ * are handled on the network thread; tcp_timer() runs there too.
  */
 #include <kernel.h>
 #include <net.h>
@@ -17,6 +19,14 @@
 #define RX_CAP (256 * 1024)
 #define TX_CAP (128 * 1024)
 #define OUR_MSS 1460
+#define OOO_MAX 24                  /* out-of-order segments kept per connection */
+
+struct ooo_seg {
+    uint32_t seq;
+    uint16_t len;
+    bool used;
+    uint8_t data[OUR_MSS];
+};
 
 enum { S_FREE, S_INIT, S_SYN_SENT, S_ESTABLISHED, S_FIN_WAIT, S_CLOSE_WAIT, S_CLOSED };
 
@@ -37,6 +47,7 @@ struct tcp_sock {
     uint32_t rcv_nxt;
     uint8_t *rx;
     size_t rx_head, rx_len;
+    struct ooo_seg *ooo;
     bool peer_fin, reset, window_closed;
     char chan;
 };
@@ -67,7 +78,7 @@ static inline uint32_t bswap32(uint32_t v) { return __builtin_bswap32(v); }
 static uint16_t rx_window(struct tcp_sock *s)
 {
     size_t free = RX_CAP - s->rx_len;
-    return (uint16_t)MIN(free, (size_t)65535);
+    return (uint16_t)MIN(MIN(free, (size_t)65535), (size_t)net_rx_window(s->rip));
 }
 
 /* build and send one segment; data is taken from the send buffer at offset off */
@@ -91,7 +102,7 @@ static void send_seg(struct tcp_sock *s, uint32_t seq, uint8_t flags, size_t off
     t->csum = 0;
     t->urg = 0;
     if (len) memcpy(pkt + hl, s->tx + off, len);
-    uint32_t src = net_local_ip(), dst = s->rip;
+    uint32_t src = net_src_ip(s->rip), dst = s->rip;
     uint32_t sum = (src >> 16) + (src & 0xFFFF) + (dst >> 16) + (dst & 0xFFFF) + 6 + (uint32_t)(hl + len);
     t->csum = net_csum(pkt, hl + len, sum);
     net_ip_send(s->rip, 6, pkt, hl + len);
@@ -138,6 +149,16 @@ static struct tcp_sock *lookup(uint32_t rip, uint16_t rport, uint16_t lport)
         if (s->state > S_INIT && s->rip == rip && s->rport == rport && s->lport == lport) return s;
     }
     return NULL;
+}
+
+/* append in-order data to the receive ring; returns how much fitted */
+static size_t rx_append(struct tcp_sock *s, const uint8_t *p, size_t n)
+{
+    size_t take = MIN(n, RX_CAP - s->rx_len);
+    for (size_t i = 0; i < take; i++) s->rx[(s->rx_head + s->rx_len + i) % RX_CAP] = p[i];
+    s->rx_len += take;
+    s->rcv_nxt += (uint32_t)take;
+    return take;
 }
 
 void tcp_input(uint32_t src, uint8_t *data, size_t len)
@@ -217,12 +238,37 @@ void tcp_input(uint32_t src, uint8_t *data, size_t len)
             else { payload += old; plen -= old; seq = s->rcv_nxt; }
         }
         if (plen && seq == s->rcv_nxt) {
-            size_t take = MIN(plen, RX_CAP - s->rx_len);
-            for (size_t i = 0; i < take; i++) s->rx[(s->rx_head + s->rx_len + i) % RX_CAP] = payload[i];
-            s->rx_len += take;
-            s->rcv_nxt += (uint32_t)take;
+            size_t take = rx_append(s, payload, plen);
             if (take < plen) s->window_closed = true;
+            /* segments that were waiting behind this one */
+            for (bool more = take == plen; more && s->ooo;) {
+                more = false;
+                for (int i = 0; i < OOO_MAX; i++) {
+                    struct ooo_seg *o = &s->ooo[i];
+                    if (!o->used || SEQ_LT(s->rcv_nxt, o->seq)) continue;
+                    o->used = false;
+                    uint32_t skip = s->rcv_nxt - o->seq;
+                    if (skip < o->len) {
+                        size_t n = o->len - skip;
+                        if (rx_append(s, o->data + skip, n) < n) { s->window_closed = true; break; }
+                    }
+                    more = true;
+                }
+            }
             wake = true;
+        } else if (plen && s->ooo && plen <= OUR_MSS && SEQ_LE(seq + (uint32_t)plen, s->rcv_nxt + (uint32_t)(RX_CAP - s->rx_len))) {
+            /* ahead of a gap: keep it (the duplicate ACK below asks for the gap) */
+            int slot = -1;
+            for (int i = 0; i < OOO_MAX; i++) {
+                if (s->ooo[i].used && s->ooo[i].seq == seq) { slot = -2; break; }
+                if (!s->ooo[i].used && slot == -1) slot = i;
+            }
+            if (slot >= 0) {
+                s->ooo[slot].seq = seq;
+                s->ooo[slot].len = (uint16_t)plen;
+                memcpy(s->ooo[slot].data, payload, plen);
+                s->ooo[slot].used = true;
+            }
         }
         need_ack = true;
     }
@@ -273,20 +319,24 @@ void tcp_timer(void)
 
 tcp_sock_t *tcp_connect(uint32_t ip, uint16_t port, int timeout_ms)
 {
-    if (!net_local_ip()) return NULL;
+    if (!net_src_ip(ip)) return NULL;
     spin_lock(&tcp_lock);
     struct tcp_sock *s = NULL;
     for (int i = 0; i < MAX_SOCKS && !s; i++)
         if (socks[i].state == S_FREE) s = &socks[i];
     if (!s) { spin_unlock(&tcp_lock); return NULL; }
     uint8_t *rx = s->rx, *tx = s->tx;
+    struct ooo_seg *ooo = s->ooo;
     memset(s, 0, sizeof(*s));
     s->rx = rx;
     s->tx = tx;
+    s->ooo = ooo;
+    if (ooo) for (int i = 0; i < OOO_MAX; i++) ooo[i].used = false;
     s->state = S_INIT;                          /* claims the slot; the timer leaves it alone */
     spin_unlock(&tcp_lock);
     if (!s->rx) s->rx = kmalloc(RX_CAP);
     if (!s->tx) s->tx = kmalloc(TX_CAP);
+    if (!s->ooo) s->ooo = kzalloc(OOO_MAX * sizeof(struct ooo_seg));
     if (!s->rx || !s->tx || !net_route_ready(ip, 2000)) {
         klog("tcp: no route to the destination (ARP failed)");
         spin_lock(&tcp_lock);

@@ -165,10 +165,19 @@ kernel: $(BUILD)/kernel.elf
 DISK_MIB := 1024
 QEMU_DISK := -drive file=$(BUILD)/disk.img,format=raw,if=none,id=hd0 -device ide-hd,drive=hd0,bus=ide.0
 
+# the network adapter model: any of the PCI models in README.md, e.g.
+# make run NIC=rtl8139 (NIC=usb-net plugs in a USB network adapter)
+NIC ?= e1000
+ifeq ($(NIC),usb-net)
+QEMU_NIC := -device qemu-xhci,id=nicxhci -device usb-net,netdev=n0,bus=nicxhci.0
+else
+QEMU_NIC := -device $(NIC),netdev=n0
+endif
+
 QEMU_COMMON := -machine q35 -m 2G -smp 4 -serial stdio \
 	-drive if=pflash,format=raw,readonly=on,file=$(OVMF_CODE) \
 	-drive if=pflash,format=raw,file=$(BUILD)/ovmf_vars.fd \
-	-netdev user,id=n0 -device e1000,netdev=n0 -device intel-hda -device hda-duplex $(QEMU_DISK)
+	-netdev user,id=n0 $(QEMU_NIC) -device intel-hda -device hda-duplex $(QEMU_DISK)
 
 disk: $(BUILD)/disk.img
 
